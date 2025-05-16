@@ -9,12 +9,22 @@ from sklearn.preprocessing import MinMaxScaler
 # Import trading strategy modules
 from neural_ode_trading_strategy import visualize_trading_strategy as visualize_neural_ode
 from lstm_trading_strategy import visualize_trading_strategy as visualize_lstm
+from arch_trading_strategy import (
+    prepare_returns, 
+    fit_arch_model, 
+    generate_predictions as arch_predict,
+    visualize_trading_strategy as visualize_arch
+)
 
-# For debugging only - these would be imported from the neural_ode module in a real setup
+# Import additional functions for different models
 from lstm_trading_strategy import (
     train_lstm_model, 
     generate_predictions as lstm_predict, 
     calculate_performance_metrics as lstm_metrics
+)
+
+from arch_trading_strategy import (
+    calculate_performance_metrics as arch_metrics
 )
 
 def load_stock_data(ticker, start_date='2017-01-01', end_date='2022-12-31'):
@@ -32,14 +42,14 @@ def load_stock_data(ticker, start_date='2017-01-01', end_date='2022-12-31'):
     # Download data from Yahoo Finance
     data = yf.download(ticker, start=start_date, end=end_date)
     
-    # Select adjusted close prices
-    prices = data['Adj Close']
+    # Select close prices (Yahoo Finance now auto-adjusts by default)
+    prices = data['Close']
     
     return prices
 
 def compare_models(ticker='SPY', start_date='2017-01-01', end_date='2022-12-31'):
     """
-    Compare Neural ODE and LSTM models for trading strategy on given ticker
+    Compare Neural ODE, LSTM, and ARCH models for trading strategy on given ticker
     
     Args:
         ticker: Stock ticker symbol
@@ -89,6 +99,40 @@ def compare_models(ticker='SPY', start_date='2017-01-01', end_date='2022-12-31')
     )
     
     # -------------------------
+    # Train and evaluate ARCH model
+    # -------------------------
+    print("\nTraining ARCH model...")
+    # Calculate returns for ARCH model
+    test_returns = prepare_returns(test_data.values)
+    
+    # Fit ARCH model
+    arch_model_result = fit_arch_model(
+        test_returns,
+        p=1,  # ARCH term
+        q=1,  # GARCH term
+        mean='Constant',
+        vol='GARCH',
+        dist='normal'
+    )
+    
+    # Generate ARCH predictions
+    print("Generating ARCH predictions...")
+    arch_direction_predictions, arch_forecast_variance = arch_predict(
+        arch_model_result, 
+        test_returns, 
+        forecast_horizon=1
+    )
+    
+    # Visualize ARCH strategy
+    print("Evaluating ARCH trading strategy...")
+    arch_results = visualize_arch(test_data.values, arch_direction_predictions)
+    
+    arch_metrics_results, arch_advanced_metrics = arch_metrics(
+        arch_results['portfolio_value'], 
+        arch_results['buy_and_hold']
+    )
+    
+    # -------------------------
     # For Neural ODE, we would normally train here
     # For this example, we'll generate synthetic results for demonstration
     # -------------------------
@@ -104,12 +148,20 @@ def compare_models(ticker='SPY', start_date='2017-01-01', end_date='2022-12-31')
     neural_ode_results = visualize_neural_ode(test_data.values, neural_ode_predictions)
     
     # Compare the results
-    compare_results(lstm_results, lstm_metrics_results, lstm_advanced_metrics,
-                   neural_ode_results, ticker)
+    compare_results(
+        lstm_results, lstm_metrics_results, lstm_advanced_metrics,
+        arch_results, arch_metrics_results, arch_advanced_metrics,
+        neural_ode_results, 
+        ticker
+    )
     
     # Save comparison results
-    save_comparison_results(lstm_results, lstm_metrics_results, lstm_advanced_metrics,
-                          neural_ode_results, ticker)
+    save_comparison_results(
+        lstm_results, lstm_metrics_results, lstm_advanced_metrics,
+        arch_results, arch_metrics_results, arch_advanced_metrics,
+        neural_ode_results, 
+        ticker
+    )
     
     print("\nModel comparison completed!")
 
@@ -144,15 +196,22 @@ def create_synthetic_predictions(actual_prices, shift=2, noise=0.01):
     
     return predictions
 
-def compare_results(lstm_results, lstm_metrics, lstm_advanced_metrics,
-                  neural_ode_results, ticker):
+def compare_results(
+    lstm_results, lstm_metrics, lstm_advanced_metrics,
+    arch_results, arch_metrics, arch_advanced_metrics,
+    neural_ode_results, 
+    ticker
+):
     """
-    Compare and visualize the performance of LSTM and Neural ODE models
+    Compare and visualize the performance of LSTM, ARCH, and Neural ODE models
     
     Args:
         lstm_results: Results from LSTM trading strategy
         lstm_metrics: Performance metrics for LSTM
         lstm_advanced_metrics: Advanced metrics for LSTM
+        arch_results: Results from ARCH trading strategy
+        arch_metrics: Performance metrics for ARCH
+        arch_advanced_metrics: Advanced metrics for ARCH
         neural_ode_results: Results from Neural ODE trading strategy
         ticker: Stock ticker symbol
     """
@@ -164,6 +223,9 @@ def compare_results(lstm_results, lstm_metrics, lstm_advanced_metrics,
     plt.plot(lstm_results['portfolio_value'], 
              label=f"LSTM ({lstm_results['total_return']:.2f}%)", 
              color='red')
+    plt.plot(arch_results['portfolio_value'], 
+             label=f"ARCH ({arch_results['total_return']:.2f}%)", 
+             color='purple')
     plt.plot(neural_ode_results['buy_and_hold'], 
              label=f"Buy & Hold ({neural_ode_results['buy_and_hold_return']:.2f}%)", 
              color='blue', 
@@ -179,23 +241,31 @@ def compare_results(lstm_results, lstm_metrics, lstm_advanced_metrics,
     
     # Print key metrics comparison
     print("\n----- PERFORMANCE METRICS COMPARISON -----")
-    print(f"{'Metric':<25} | {'Neural ODE':<12} | {'LSTM':<12} | {'Buy & Hold':<12}")
-    print("-" * 70)
+    print(f"{'Metric':<25} | {'Neural ODE':<12} | {'LSTM':<12} | {'ARCH':<12} | {'Buy & Hold':<12}")
+    print("-" * 85)
     
     for metric in lstm_metrics:
-        neural_ode_value = neural_ode_results['metrics'][metric]['strategy'] if metric in neural_ode_results['metrics'] else 'N/A'
-        print(f"{metric:<25} | {neural_ode_value:<12} | {lstm_metrics[metric]['strategy']:<12} | {lstm_metrics[metric]['buyhold']:<12}")
+        neural_ode_value = neural_ode_results['metrics'][metric]['strategy'] if metric in neural_ode_results.get('metrics', {}) else 'N/A'
+        arch_value = arch_metrics[metric]['strategy'] if metric in arch_metrics else 'N/A'
+        
+        print(f"{metric:<25} | {neural_ode_value:<12} | {lstm_metrics[metric]['strategy']:<12} | {arch_value:<12} | {lstm_metrics[metric]['buyhold']:<12}")
     
     print("\n----- ADVANCED METRICS COMPARISON -----")
-    print(f"{'Metric':<25} | {'Neural ODE':<12} | {'LSTM':<12} | {'Buy & Hold':<12}")
-    print("-" * 70)
+    print(f"{'Metric':<25} | {'Neural ODE':<12} | {'LSTM':<12} | {'ARCH':<12} | {'Buy & Hold':<12}")
+    print("-" * 85)
     
     for metric in lstm_advanced_metrics:
-        neural_ode_value = neural_ode_results['advanced_metrics'][metric]['strategy'] if metric in neural_ode_results['advanced_metrics'] else 'N/A'
-        print(f"{metric:<25} | {neural_ode_value:<12} | {lstm_advanced_metrics[metric]['strategy']:<12} | {lstm_advanced_metrics[metric]['buyhold']:<12}")
+        neural_ode_value = neural_ode_results['advanced_metrics'][metric]['strategy'] if metric in neural_ode_results.get('advanced_metrics', {}) else 'N/A'
+        arch_value = arch_advanced_metrics[metric]['strategy'] if metric in arch_advanced_metrics else 'N/A'
+        
+        print(f"{metric:<25} | {neural_ode_value:<12} | {lstm_advanced_metrics[metric]['strategy']:<12} | {arch_value:<12} | {lstm_advanced_metrics[metric]['buyhold']:<12}")
 
-def save_comparison_results(lstm_results, lstm_metrics, lstm_advanced_metrics,
-                          neural_ode_results, ticker):
+def save_comparison_results(
+    lstm_results, lstm_metrics, lstm_advanced_metrics,
+    arch_results, arch_metrics, arch_advanced_metrics,
+    neural_ode_results, 
+    ticker
+):
     """
     Save comparison results for web interface
     
@@ -203,6 +273,9 @@ def save_comparison_results(lstm_results, lstm_metrics, lstm_advanced_metrics,
         lstm_results: Results from LSTM trading strategy
         lstm_metrics: Performance metrics for LSTM
         lstm_advanced_metrics: Advanced metrics for LSTM
+        arch_results: Results from ARCH trading strategy
+        arch_metrics: Performance metrics for ARCH
+        arch_advanced_metrics: Advanced metrics for ARCH
         neural_ode_results: Results from Neural ODE trading strategy
         ticker: Stock ticker symbol
     """
@@ -216,12 +289,19 @@ def save_comparison_results(lstm_results, lstm_metrics, lstm_advanced_metrics,
             'metrics': lstm_metrics,
             'advanced_metrics': lstm_advanced_metrics
         },
+        'arch': {
+            'signals': arch_results['signals'],
+            'portfolio_value': arch_results['portfolio_value'],
+            'total_return': arch_results['total_return'],
+            'metrics': arch_metrics,
+            'advanced_metrics': arch_advanced_metrics
+        },
         'neural_ode': {
             'signals': neural_ode_results['signals'],
             'portfolio_value': neural_ode_results['portfolio_value'],
             'total_return': neural_ode_results['total_return'],
-            'metrics': neural_ode_results['metrics'] if 'metrics' in neural_ode_results else {},
-            'advanced_metrics': neural_ode_results['advanced_metrics'] if 'advanced_metrics' in neural_ode_results else {}
+            'metrics': neural_ode_results.get('metrics', {}),
+            'advanced_metrics': neural_ode_results.get('advanced_metrics', {})
         },
         'buy_and_hold': {
             'values': lstm_results['buy_and_hold'],

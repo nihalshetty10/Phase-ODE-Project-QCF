@@ -60,7 +60,7 @@
     <div class="header">
         <div class="container">
             <h1 class="display-4">Advanced Trading Strategy Comparison</h1>
-            <p class="lead">Backtesting tool comparing Neural ODEs and LSTM models for price prediction</p>
+            <p class="lead">Backtesting tool comparing Neural ODEs, LSTM, and ARCH models for trading</p>
         </div>
     </div>
 
@@ -95,11 +95,12 @@
                             <ul>
                                 <li><strong>Neural ODEs</strong>: Uses continuous-depth neural networks to model complex dynamical systems and predict price trajectories.</li>
                                 <li><strong>LSTM</strong>: Uses Long Short-Term Memory networks to capture long-term dependencies in time series data.</li>
+                                <li><strong>ARCH</strong>: Uses Autoregressive Conditional Heteroskedasticity models to predict volatility and generate trading signals.</li>
                             </ul>
                             <p>After entering a ticker, the system will:</p>
                             <ol>
                                 <li>Fetch historical price data</li>
-                                <li>Apply both models for prediction</li>
+                                <li>Apply all models for prediction</li>
                                 <li>Generate trading signals (BUY, SELL, SHORT, COVER)</li>
                                 <li>Calculate performance metrics for comparison</li>
                             </ol>
@@ -122,6 +123,7 @@
                                 <button class="btn btn-outline-primary active" id="btnCompare">Side-by-Side Comparison</button>
                                 <button class="btn btn-outline-primary" id="btnNeuralODE">Neural ODE</button>
                                 <button class="btn btn-outline-primary" id="btnLSTM">LSTM</button>
+                                <button class="btn btn-outline-primary" id="btnARCH">ARCH</button>
                             </div>
                         </div>
                     </div>
@@ -199,6 +201,7 @@
                                             <th>Metric</th>
                                             <th>Neural ODE</th>
                                             <th>LSTM</th>
+                                            <th>ARCH</th>
                                             <th>Buy and Hold</th>
                                         </tr>
                                     </thead>
@@ -224,6 +227,7 @@
                                             <th>Metric</th>
                                             <th>Neural ODE</th>
                                             <th>LSTM</th>
+                                            <th>ARCH</th>
                                             <th>Buy and Hold</th>
                                         </tr>
                                     </thead>
@@ -244,7 +248,7 @@
             <div class="row">
                 <div class="col-md-12 text-center">
                     <p>Advanced Trading Strategy Comparison - A project by <a href="https://github.com/yourusername" target="_blank">Your Name</a></p>
-                    <p><small>Powered by Neural Ordinary Differential Equations, LSTMs, and PyTorch</small></p>
+                    <p><small>Powered by Neural Ordinary Differential Equations, LSTMs, ARCH Models, and PyTorch</small></p>
                 </div>
             </div>
         </div>
