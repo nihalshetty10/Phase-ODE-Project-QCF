@@ -1,99 +1,104 @@
-# Neural ODE Trading Strategy
-
-A web-based visualization tool for demonstrating trading strategies based on Neural Ordinary Differential Equations for price prediction.
+# Advanced Financial Trading Strategies Comparison
 
 ## Overview
 
-This project showcases a trading strategy that uses Neural ODEs to generate trading signals (BUY, SELL, SHORT, and COVER) based on price predictions. The website allows users to input a stock ticker symbol and view the performance of the trading strategy compared to a simple buy-and-hold approach.
+This project implements and compares three advanced financial trading strategies:
+1.  **ARCH/GARCH Models**: Utilizes Autoregressive Conditional Heteroskedasticity models to forecast volatility and generate trading signals based on volatility regimes.
+2.  **LSTM (Long Short-Term Memory) Networks**: Employs recurrent neural networks to predict future price movements based on historical price sequences.
+3.  **Neural Ordinary Differential Equations (Neural ODEs)**: Leverages continuous-depth neural networks to model the underlying dynamics of financial time series for price forecasting. This approach is inspired by the paper "Phase Space Reconstructed Neural Ordinary Differential Equations Model for Stock Price Forecasting" by Nguyen et al.
 
-## Live Demo
-
-You can access the live demo at: [https://yourusername.github.io/neural-ode-trading](https://yourusername.github.io/neural-ode-trading)
+The project includes individual backtesting for each strategy and a comprehensive comparison framework, visualized through a web interface.
 
 ## Features
 
-- Interactive web interface for testing the Neural ODE trading strategy
-- Visualization of price predictions and trading signals
-- Performance comparison with buy-and-hold strategy
-- Comprehensive performance metrics including:
-  - Maximum drawdown
-  - Sharpe ratio
-  - Standard deviation
-  - Mean return
-  - Win rate
-  - Profit factor
-  - Calmar ratio
-  - Sortino ratio
-- Visual analysis of drawdowns, return distribution, and rolling Sharpe ratio
+* **Multiple Models**: Implementation of ARCH/GARCH, LSTM, and Neural ODEs for stock price/direction forecasting.
+* **Backtesting Engine**: Robust backtesting functionality to simulate trading strategies and evaluate performance.
+* **Performance Metrics**: Calculation of a wide range of metrics, including:
+    * Total & Annualized Return
+    * Volatility (Daily & Annualized)
+    * Sharpe Ratio
+    * Maximum Drawdown
+    * Win Rate & Profit Factor
+    * Sortino Ratio
+    * Calmar Ratio
+* **Comparative Analysis**: A dedicated script to run all strategies on the same dataset and compare their performance side-by-side.
+* **Interactive Web Visualization**: A user-friendly web interface (`web_interface/index.html`) to display:
+    * Price predictions vs. actual prices.
+    * Trading signals on price charts.
+    * Portfolio performance against a Buy & Hold strategy.
+    * Drawdown analysis.
+    * Distribution of daily returns.
+    * Rolling Sharpe ratios.
+    * Tabular comparison of all key performance metrics.
 
 ## Technologies Used
 
-- **Frontend**: HTML, CSS, JavaScript
-- **Visualization**: Chart.js
-- **Styling**: Bootstrap 5
-- **Hosting**: GitHub Pages
+* **Python 3.x**
+* **Core Libraries**:
+    * `pandas` for data manipulation.
+    * `numpy` for numerical operations.
+    * `matplotlib` for plotting.
+    * `yfinance` for downloading stock data.
+    * `scikit-learn` for data preprocessing (e.g., `MinMaxScaler`).
+* **Modeling Libraries**:
+    * `arch` for ARCH/GARCH models.
+    * `torch` (PyTorch) for LSTM and Neural ODE implementations.
+    * `torchdiffeq` for Neural ODE solver.
+* **Web Interface**:
+    * HTML, CSS, JavaScript
+    * `Chart.js` for interactive charts.
+    * `Bootstrap` for styling.
 
-## How It Works
+## Setup and Installation
 
-The Neural ODE trading strategy follows these rules:
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/yourusername/your-repo-name.git](https://github.com/yourusername/your-repo-name.git)
+    cd your-repo-name
+    ```
 
-1. If we have no holdings and the model predicts the stock will go up: BUY
-2. If we have a holding and the model predicts up: HOLD
-3. If we have a holding and the model predicts down: SELL
-4. If the model predicts down and we have no holdings: SHORT
-5. If we are short and the model predicts up: BUY_TO_COVER (close short position)
+2.  **Create a virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
 
-## Repository Structure
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-```
-.
-├── index.html          # Main HTML file
-├── script.js           # JavaScript for handling user interaction and visualization
-├── README.md           # This file
-└── LICENSE             # License file
-```
+## Usage
 
-## Background on Neural ODEs
+### Running Individual Strategies
 
-Neural Ordinary Differential Equations (Neural ODEs) represent a novel approach to modeling continuous-time dynamics of data. Unlike traditional neural networks that update states in discrete layers, Neural ODEs define the derivative of the hidden state with respect to time. This continuous formulation allows the model to learn complex temporal dependencies in time series data, making them particularly suitable for financial time series prediction.
+You can run each trading strategy independently:
 
-The core idea can be expressed as:
+* **ARCH/GARCH Strategy:**
+    ```bash
+    python arch_trading_example.py
+    ```
+    This will load data for 'SPY', fit an ARCH/GARCH model, generate signals, visualize performance, and save results to `arch_trading_signals.csv` and `arch_results.pkl`.
 
-```
-dh(t)/dt = f(h(t), t, θ)
-```
+* **LSTM Strategy:**
+    ```bash
+    python lstm_trading_example.py
+    ```
+    This will train an LSTM model on 'SPY' data, generate predictions, visualize performance, and save results to `lstm_trading_signals.csv` and `lstm_results.pkl`.
 
-Where:
-- h(t) is the hidden state at time t
-- f is a neural network that computes the derivative
-- θ represents the model parameters
+* **Neural ODE Strategy:**
+    *(Assuming you've refactored `trading_strategy.py` to `neural_ode_core.py` and potentially created a `run_neural_ode_strategy.py`)*
+    ```bash
+    # If you have a dedicated runner script:
+    python run_neural_ode_strategy.py 
+    # Alternatively, the core logic might be directly in neural_ode_core.py:
+    # python neural_ode_core.py 
+    ```
+    This script should handle training or loading a pre-trained Neural ODE model, making predictions, and saving its results (e.g., `neural_ode_results.pkl`). 
+    *(You'll need to clarify how this is run after refactoring)*
 
-For our trading strategy, we use Neural ODEs to predict future price movements, which then inform our trading decisions.
+### Running Model Comparison
 
-## Local Development
-
-To run this project locally:
-
-1. Clone the repository:
-```
-git clone https://github.com/yourusername/neural-ode-trading.git
-cd neural-ode-trading
-```
-
-2. Open `index.html` in your web browser or use a local server:
-```
-# If you have Python installed:
-python -m http.server
-```
-
-3. Access the site at `http://localhost:8000`
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- This project is based on research in Neural ODEs for financial time series prediction
-- The trading strategy logic is inspired by quantitative finance principles
-- Chart.js for providing excellent visualization capabilities
+To compare all models:
+```bash
+python model_comparison_example.py

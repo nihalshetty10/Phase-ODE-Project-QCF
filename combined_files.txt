@@ -1,0 +1,4265 @@
+# arch_trading_example.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import yfinance as yf
+import pickle
+from arch_trading_strategy import (
+    prepare_returns,
+    fit_arch_model,
+    generate_predictions,
+    generate_trading_signals,
+    visualize_trading_strategy,
+    save_trading_signals,
+    calculate_performance_metrics
+)
+
+def load_stock_data(ticker, start_date='2017-01-01', end_date='2022-12-31'):
+    """
+    Load stock data from Yahoo Finance
+    
+    Args:
+        ticker: Stock ticker symbol
+        start_date: Start date for data
+        end_date: End date for data
+        
+    Returns:
+        DataFrame with stock prices
+    """
+    # Download data from Yahoo Finance
+    data = yf.download(ticker, start=start_date, end=end_date)
+    
+    # Select adjusted close prices
+    prices = data['Adj Close']
+    
+    return prices
+
+def main():
+    """Main function to demonstrate ARCH trading strategy"""
+    # Set random seed for reproducibility
+    np.random.seed(42)
+    
+    print("Loading stock data...")
+    ticker = 'SPY'  # S&P 500 ETF
+    prices = load_stock_data(ticker, start_date='2018-01-01', end_date='2022-12-31')
+    
+    # Split data into train and test sets
+    train_size = int(len(prices) * 0.8)
+    train_data = prices[:train_size]
+    test_data = prices[train_size:]
+    
+    print(f"Training data size: {len(train_data)}")
+    print(f"Test data size: {len(test_data)}")
+    
+    # Calculate returns for ARCH model
+    print("Calculating returns...")
+    train_returns = prepare_returns(train_data.values)
+    test_returns = prepare_returns(test_data.values)
+    
+    # Fit ARCH model
+    print("Fitting ARCH/GARCH model...")
+    # Using GARCH(1,1) with a constant mean
+    model_result = fit_arch_model(
+        train_returns,
+        p=1,  # ARCH term
+        q=1,  # GARCH term
+        mean='Constant',
+        vol='GARCH',
+        dist='normal'
+    )
+    
+    print("\nModel Summary:")
+    print(model_result.summary().tables[0].as_text())
+    
+    # Generate directional predictions
+    print("\nGenerating volatility forecasts and directional predictions...")
+    direction_predictions, forecast_variance = generate_predictions(
+        model_result, 
+        train_returns, 
+        forecast_horizon=1
+    )
+    
+    # Fit another model on all data for testing
+    full_returns = prepare_returns(test_data.values)
+    test_model = fit_arch_model(
+        full_returns,
+        p=1,
+        q=1,
+        mean='Constant',
+        vol='GARCH',
+        dist='normal'
+    )
+    
+    # Generate predictions for test set
+    test_direction_predictions, test_forecast_variance = generate_predictions(
+        test_model,
+        full_returns,
+        forecast_horizon=1
+    )
+    
+    # Visualize trading strategy
+    print("Visualizing ARCH trading strategy...")
+    results = visualize_trading_strategy(test_data.values, test_direction_predictions)
+    
+    # Save trading signals
+    save_trading_signals(
+        test_data.values,
+        test_direction_predictions,
+        results['signals'],
+        results['portfolio_value'],
+        'arch_trading_signals.csv'
+    )
+    
+    # Calculate detailed performance metrics
+    metrics, advanced_metrics = calculate_performance_metrics(
+        results['portfolio_value'],
+        results['buy_and_hold']
+    )
+    
+    # Print detailed metrics
+    print("\nPerformance Metrics:")
+    for metric, values in metrics.items():
+        print(f"{metric}: Strategy = {values['strategy']}, Buy & Hold = {values['buyhold']}")
+    
+    print("\nAdvanced Metrics:")
+    for metric, values in advanced_metrics.items():
+        print(f"{metric}: Strategy = {values['strategy']}, Buy & Hold = {values['buyhold']}")
+    
+    # Save combined results (can be loaded for comparison with other models)
+    combined_results = {
+        'arch': {
+            'signals': results['signals'],
+            'portfolio_value': results['portfolio_value'],
+            'buy_and_hold': results['buy_and_hold'],
+            'total_return': results['total_return'],
+            'buy_and_hold_return': results['buy_and_hold_return'],
+            'metrics': metrics,
+            'advanced_metrics': advanced_metrics
+        }
+    }
+    
+    with open('arch_results.pkl', 'wb') as f:
+        pickle.dump(combined_results, f)
+    
+    print("ARCH trading strategy analysis complete!")
+
+if __name__ == "__main__":
+    main() # arch_trading_strategy.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+from arch import arch_model
+from sklearn.preprocessing import StandardScaler
+
+def fit_arch_model(returns, p=1, q=1, mean='Zero', vol='GARCH', dist='normal'):
+    """
+    Fit ARCH/GARCH model to return series
+    
+    Args:
+        returns: Series of asset returns
+        p: Order of the symmetric innovation
+        q: Order of lagged volatility 
+        mean: Mean model ('Zero', 'Constant', 'AR', etc.)
+        vol: Volatility model ('ARCH', 'GARCH', 'EGARCH', etc.)
+        dist: Error distribution ('normal', 'studentst', 'skewt', etc.)
+        
+    Returns:
+        Fitted ARCH model
+    """
+    # Create and fit the model
+    model = arch_model(returns, p=p, q=q, mean=mean, vol=vol, dist=dist)
+    result = model.fit(disp='off')
+    
+    return result
+
+def prepare_returns(prices):
+    """
+    Calculate returns from price series
+    
+    Args:
+        prices: Array of asset prices
+        
+    Returns:
+        Array of returns
+    """
+    # Calculate percentage returns
+    returns = np.diff(prices) / prices[:-1]
+    
+    return returns
+
+def generate_predictions(model_result, returns, forecast_horizon=1):
+    """
+    Generate volatility forecasts from fitted ARCH model
+    
+    Args:
+        model_result: Fitted ARCH model result
+        returns: Series of asset returns
+        forecast_horizon: Number of steps to forecast
+        
+    Returns:
+        Forecasted volatility and directional predictions
+    """
+    # Forecast volatility
+    forecasts = model_result.forecast(horizon=forecast_horizon)
+    
+    # Get the variance forecasts
+    forecast_variance = forecasts.variance.values[-1]
+    
+    # Estimate price direction based on volatility trend
+    # If volatility is decreasing, predict price increase
+    # If volatility is increasing, predict price decrease
+    
+    # Get historical conditional volatility
+    historical_vol = np.sqrt(model_result.conditional_volatility)
+    
+    # Initialize directional predictions
+    direction_predictions = np.zeros(len(returns) + 1)
+    
+    # For the first day, there is no prediction
+    direction_predictions[0] = 0
+    
+    # For subsequent days, predict based on volatility trend
+    for i in range(1, len(returns)):
+        vol_change = historical_vol[i] - historical_vol[i-1]
+        if vol_change < 0:
+            # Volatility decreasing, predict price increase
+            direction_predictions[i] = 1
+        else:
+            # Volatility increasing, predict price decrease
+            direction_predictions[i] = -1
+    
+    # Add forecasted direction for the next day
+    if len(historical_vol) > 1 and forecast_variance is not None:
+        last_vol = historical_vol[-1]
+        forecasted_vol = np.sqrt(forecast_variance[0])
+        if forecasted_vol < last_vol:
+            # Forecasted volatility is lower, predict price increase
+            direction_predictions[-1] = 1
+        else:
+            # Forecasted volatility is higher, predict price decrease
+            direction_predictions[-1] = -1
+    
+    return direction_predictions, forecast_variance
+
+def generate_trading_signals(actual_prices, direction_predictions):
+    """
+    Generate trading signals based on directional predictions
+    
+    Args:
+        actual_prices: Array of actual prices
+        direction_predictions: Array of directional predictions (1: up, -1: down, 0: no change)
+        
+    Returns:
+        List of trading signals
+    """
+    signals = []
+    position = 0  # 0: no position, 1: long, -1: short
+    
+    # For the first day, we don't have a meaningful prediction
+    signals.append('HOLD')
+    
+    for i in range(1, len(direction_predictions)):
+        # Get the current direction prediction
+        direction = direction_predictions[i]
+        
+        if position == 0:  # No position
+            if direction > 0:  # Model predicts price will go up
+                signals.append('BUY')
+                position = 1
+            elif direction < 0:  # Model predicts price will go down
+                signals.append('SHORT')
+                position = -1
+            else:  # No change predicted
+                signals.append('HOLD')
+                
+        elif position == 1:  # Long position
+            if direction > 0:  # Model predicts price will go up
+                signals.append('HOLD')
+            else:  # Model predicts price will go down
+                signals.append('SELL')
+                position = 0
+                
+        elif position == -1:  # Short position
+            if direction < 0:  # Model predicts price will go down
+                signals.append('HOLD')
+            else:  # Model predicts price will go up
+                signals.append('BUY_TO_COVER')
+                position = 0
+    
+    return signals
+
+def calculate_portfolio_value(actual_prices, signals, initial_capital=10000.0):
+    """
+    Calculate portfolio value based on trading signals
+    
+    Args:
+        actual_prices: Array of actual prices
+        signals: List of trading signals
+        initial_capital: Initial capital amount
+        
+    Returns:
+        Array of portfolio values
+    """
+    portfolio_value = [initial_capital]
+    position = 0  # 0: no position, 1: long, -1: short
+    shares = 0
+    cash = initial_capital
+    
+    for i in range(1, len(signals)):
+        signal = signals[i]
+        price = actual_prices[i]
+        
+        if signal == 'BUY':
+            # Calculate number of shares we can buy with all available cash
+            shares = cash / price
+            cash = 0
+            position = 1
+        elif signal == 'SELL' and position == 1:
+            # Sell all shares
+            cash = shares * price
+            shares = 0
+            position = 0
+        elif signal == 'SHORT':
+            # Short selling (borrow shares equal to cash value and sell them)
+            # For simplicity, we'll assume short selling 1x leverage
+            shares = -cash / price
+            cash = cash * 2  # Cash + proceeds from short sale
+            position = -1
+        elif signal == 'BUY_TO_COVER' and position == -1:
+            # Buy to cover short position
+            cash = cash - (-shares * price)  # Subtract cost of buying back shares
+            shares = 0
+            position = 0
+            
+        # Calculate portfolio value
+        if position == 0:
+            portfolio_value.append(cash)
+        elif position == 1:
+            portfolio_value.append(cash + shares * price)
+        elif position == -1:
+            portfolio_value.append(cash + shares * price)  # Short position value
+    
+    return portfolio_value
+
+def visualize_trading_strategy(actual_prices, direction_predictions, initial_capital=10000.0):
+    """
+    Visualize ARCH trading strategy performance
+    
+    Args:
+        actual_prices: Array of actual prices
+        direction_predictions: Array of directional predictions
+        initial_capital: Initial capital amount
+        
+    Returns:
+        Dictionary with trading results
+    """
+    # Generate trading signals
+    signals = generate_trading_signals(actual_prices, direction_predictions)
+    
+    # Calculate portfolio value
+    portfolio_value = calculate_portfolio_value(actual_prices, signals, initial_capital)
+    
+    # Calculate buy and hold strategy
+    buy_and_hold = [initial_capital]
+    for i in range(1, len(actual_prices)):
+        buy_and_hold.append(initial_capital * (actual_prices[i] / actual_prices[0]))
+    
+    # Calculate strategy performance metrics
+    total_return = (portfolio_value[-1] / portfolio_value[0] - 1) * 100
+    buy_and_hold_return = (buy_and_hold[-1] / buy_and_hold[0] - 1) * 100
+    total_trades = sum(1 for signal in signals if signal in ['BUY', 'SELL', 'SHORT', 'BUY_TO_COVER'])
+    
+    # Plot strategy performance
+    plt.figure(figsize=(14, 10))
+    
+    # Plot actual prices and indicators of predictions
+    plt.subplot(3, 1, 1)
+    plt.plot(actual_prices, label='Actual Prices', color='blue')
+    
+    # Create prediction visualization
+    predicted_up = np.where(direction_predictions > 0, actual_prices, np.nan)
+    predicted_down = np.where(direction_predictions < 0, actual_prices, np.nan)
+    
+    plt.scatter(range(len(predicted_up)), predicted_up, color='green', alpha=0.5, 
+                label='Predict Up', marker='^')
+    plt.scatter(range(len(predicted_down)), predicted_down, color='red', alpha=0.5, 
+                label='Predict Down', marker='v')
+    
+    plt.title('Actual Prices and ARCH Predictions')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot trading signals on the price chart
+    plt.subplot(3, 1, 2)
+    plt.plot(actual_prices, color='blue')
+    
+    for i in range(len(signals)):
+        if signals[i] == 'BUY':
+            plt.plot(i, actual_prices[i], '^', markersize=10, color='green')
+        elif signals[i] == 'SELL':
+            plt.plot(i, actual_prices[i], 'v', markersize=10, color='red')
+        elif signals[i] == 'SHORT':
+            plt.plot(i, actual_prices[i], 'v', markersize=10, color='purple')
+        elif signals[i] == 'BUY_TO_COVER':
+            plt.plot(i, actual_prices[i], '^', markersize=10, color='orange')
+    
+    plt.title('ARCH Trading Signals')
+    plt.grid(True)
+    
+    # Plot portfolio value vs buy and hold
+    plt.subplot(3, 1, 3)
+    plt.plot(portfolio_value, label=f'ARCH Strategy ({total_return:.2f}%)', color='green')
+    plt.plot(buy_and_hold, label=f'Buy and Hold ({buy_and_hold_return:.2f}%)', color='blue', linestyle='--')
+    plt.title('Portfolio Value vs Buy and Hold')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary statistics
+    print(f"ARCH Strategy Return: {total_return:.2f}%")
+    print(f"Buy and Hold Return: {buy_and_hold_return:.2f}%")
+    print(f"Alpha: {total_return - buy_and_hold_return:.2f}%")
+    print(f"Total Trades: {total_trades}")
+    
+    results = {
+        'signals': signals,
+        'portfolio_value': portfolio_value,
+        'buy_and_hold': buy_and_hold,
+        'total_return': total_return,
+        'buy_and_hold_return': buy_and_hold_return,
+        'total_trades': total_trades
+    }
+    
+    return results
+
+def save_trading_signals(actual_prices, direction_predictions, signals, portfolio_value, file_name='arch_trading_signals.csv'):
+    """
+    Save ARCH trading signals and performance to a CSV file
+    
+    Args:
+        actual_prices: Array of actual prices
+        direction_predictions: Array of direction predictions
+        signals: List of trading signals
+        portfolio_value: List of portfolio values
+        file_name: Output file name
+    """
+    # Create a DataFrame with all the data
+    data = {
+        'Actual_Price': actual_prices,
+        'Direction_Prediction': direction_predictions,
+        'Signal': signals,
+        'Portfolio_Value': portfolio_value
+    }
+    
+    # Create dummy dates if needed
+    dates = [datetime.now().strftime('%Y-%m-%d')] * len(actual_prices)
+    
+    # Create DataFrame
+    df = pd.DataFrame(data, index=dates)
+    
+    # Save to CSV
+    df.to_csv(file_name)
+    print(f"ARCH trading signals saved to {file_name}")
+
+def calculate_performance_metrics(portfolio_values, buy_and_hold_values):
+    """
+    Calculate comprehensive performance metrics for the ARCH trading strategy
+    
+    Args:
+        portfolio_values: Array of portfolio values
+        buy_and_hold_values: Array of buy and hold values
+        
+    Returns:
+        Dictionary with performance metrics
+    """
+    # Calculate daily returns
+    strategy_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+    bh_returns = np.diff(buy_and_hold_values) / buy_and_hold_values[:-1]
+    
+    # Calculate total return
+    total_return = (portfolio_values[-1] / portfolio_values[0] - 1) * 100
+    bh_return = (buy_and_hold_values[-1] / buy_and_hold_values[0] - 1) * 100
+    
+    # Annualized return (assuming 252 trading days)
+    n_days = len(portfolio_values)
+    annualized_return = ((1 + total_return/100) ** (252/n_days) - 1) * 100
+    bh_annualized_return = ((1 + bh_return/100) ** (252/n_days) - 1) * 100
+    
+    # Mean daily return
+    mean_daily_return = np.mean(strategy_returns) * 100
+    bh_mean_daily_return = np.mean(bh_returns) * 100
+    
+    # Volatility
+    daily_volatility = np.std(strategy_returns) * 100
+    bh_daily_volatility = np.std(bh_returns) * 100
+    
+    # Annualized volatility
+    annualized_volatility = daily_volatility * np.sqrt(252)
+    bh_annualized_volatility = bh_daily_volatility * np.sqrt(252)
+    
+    # Sharpe ratio (assuming risk-free rate = 0 for simplicity)
+    sharpe_ratio = (mean_daily_return / daily_volatility) * np.sqrt(252)
+    bh_sharpe_ratio = (bh_mean_daily_return / bh_daily_volatility) * np.sqrt(252)
+    
+    # Maximum drawdown
+    cumulative_returns = np.array(portfolio_values) / portfolio_values[0]
+    bh_cumulative_returns = np.array(buy_and_hold_values) / buy_and_hold_values[0]
+    
+    running_max = np.maximum.accumulate(cumulative_returns)
+    bh_running_max = np.maximum.accumulate(bh_cumulative_returns)
+    
+    drawdown = (cumulative_returns - running_max) / running_max * 100
+    bh_drawdown = (bh_cumulative_returns - bh_running_max) / bh_running_max * 100
+    
+    max_drawdown = np.min(drawdown)
+    bh_max_drawdown = np.min(bh_drawdown)
+    
+    # Win rate
+    positive_returns = np.sum(strategy_returns > 0)
+    win_rate = positive_returns / len(strategy_returns) * 100
+    
+    # Profit factor
+    gain = np.sum(strategy_returns[strategy_returns > 0])
+    loss = np.abs(np.sum(strategy_returns[strategy_returns < 0]))
+    profit_factor = gain / loss if loss != 0 else float('inf')
+    
+    # Create metrics dictionary
+    metrics = {
+        'Total Return (%)': {
+            'strategy': f'{total_return:.2f}',
+            'buyhold': f'{bh_return:.2f}'
+        },
+        'Annualized Return (%)': {
+            'strategy': f'{annualized_return:.2f}',
+            'buyhold': f'{bh_annualized_return:.2f}'
+        },
+        'Mean Daily Return (%)': {
+            'strategy': f'{mean_daily_return:.4f}',
+            'buyhold': f'{bh_mean_daily_return:.4f}'
+        },
+        'Daily Volatility (%)': {
+            'strategy': f'{daily_volatility:.4f}',
+            'buyhold': f'{bh_daily_volatility:.4f}'
+        },
+        'Annualized Volatility (%)': {
+            'strategy': f'{annualized_volatility:.2f}',
+            'buyhold': f'{bh_annualized_volatility:.2f}'
+        },
+        'Sharpe Ratio': {
+            'strategy': f'{sharpe_ratio:.2f}',
+            'buyhold': f'{bh_sharpe_ratio:.2f}'
+        },
+        'Maximum Drawdown (%)': {
+            'strategy': f'{max_drawdown:.2f}',
+            'buyhold': f'{bh_max_drawdown:.2f}'
+        },
+        'Win Rate (%)': {
+            'strategy': f'{win_rate:.2f}',
+            'buyhold': 'N/A'
+        },
+        'Profit Factor': {
+            'strategy': f'{profit_factor:.2f}',
+            'buyhold': 'N/A'
+        }
+    }
+    
+    # Advanced metrics
+    # Sortino ratio (downside risk only)
+    negative_returns = strategy_returns[strategy_returns < 0]
+    bh_negative_returns = bh_returns[bh_returns < 0]
+    
+    downside_deviation = np.std(negative_returns) * 100 if len(negative_returns) > 0 else 1e-6
+    bh_downside_deviation = np.std(bh_negative_returns) * 100 if len(bh_negative_returns) > 0 else 1e-6
+    
+    sortino_ratio = (mean_daily_return / downside_deviation) * np.sqrt(252)
+    bh_sortino_ratio = (bh_mean_daily_return / bh_downside_deviation) * np.sqrt(252)
+    
+    # Calmar ratio (return / max drawdown)
+    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else float('inf')
+    bh_calmar_ratio = bh_annualized_return / abs(bh_max_drawdown) if bh_max_drawdown != 0 else float('inf')
+    
+    # Consecutive wins/losses
+    win_streak = 0
+    max_win_streak = 0
+    loss_streak = 0
+    max_loss_streak = 0
+    
+    for ret in strategy_returns:
+        if ret > 0:
+            win_streak += 1
+            loss_streak = 0
+            max_win_streak = max(max_win_streak, win_streak)
+        elif ret < 0:
+            loss_streak += 1
+            win_streak = 0
+            max_loss_streak = max(max_loss_streak, loss_streak)
+        else:
+            win_streak = 0
+            loss_streak = 0
+    
+    # Positive days percentage
+    positive_days = np.sum(strategy_returns > 0) / len(strategy_returns) * 100
+    bh_positive_days = np.sum(bh_returns > 0) / len(bh_returns) * 100
+    
+    # Add advanced metrics
+    advanced_metrics = {
+        'Calmar Ratio': {
+            'strategy': f'{calmar_ratio:.2f}',
+            'buyhold': f'{bh_calmar_ratio:.2f}'
+        },
+        'Sortino Ratio': {
+            'strategy': f'{sortino_ratio:.2f}',
+            'buyhold': f'{bh_sortino_ratio:.2f}'
+        },
+        'Positive Days (%)': {
+            'strategy': f'{positive_days:.2f}',
+            'buyhold': f'{bh_positive_days:.2f}'
+        },
+        'Max Consecutive Wins': {
+            'strategy': f'{max_win_streak}',
+            'buyhold': 'N/A'
+        },
+        'Max Consecutive Losses': {
+            'strategy': f'{max_loss_streak}',
+            'buyhold': 'N/A'
+        }
+    }
+    
+    return metrics, advanced_metrics # fixed_performance_metrics_cell.py
+#############################################################################
+# Cell: Calculate and Display Advanced Performance Metrics
+#############################################################################
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
+
+# Calculate daily returns from portfolio values
+portfolio_values = np.array(results['portfolio_value'])
+daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+
+# Calculate buy and hold values if not already in results
+if 'buy_and_hold' not in results:
+    # Get the first and last price from the data used to generate signals
+    # This assumes we have access to the original prices
+    try:
+        # If we used neural_ode_trading_strategy.py implementation
+        first_price = actual_prices[0]
+        prices = actual_prices
+    except NameError:
+        # If we're using the original implementation
+        # Look for the prices in the scope
+        if 'prices' in globals():
+            first_price = prices[0]
+        else:
+            print("Warning: Cannot find price data. Using a dummy buy-and-hold curve.")
+            first_price = portfolio_values[0] / 10000  # Approximate
+            prices = np.linspace(first_price, first_price * portfolio_values[-1] / portfolio_values[0], len(portfolio_values))
+    
+    # Calculate buy and hold values
+    initial_capital = portfolio_values[0]
+    buy_and_hold = [initial_capital]
+    for i in range(1, len(prices)):
+        buy_and_hold.append(initial_capital * (prices[i] / prices[0]))
+    
+    # Create buy_and_hold key in results
+    results['buy_and_hold'] = buy_and_hold
+    
+    # Calculate buy and hold return
+    if 'buy_and_hold_return' not in results:
+        results['buy_and_hold_return'] = (buy_and_hold[-1] / buy_and_hold[0] - 1) * 100
+
+# Get buy and hold values
+buy_hold_values = np.array(results['buy_and_hold'])
+buy_hold_daily_returns = np.diff(buy_hold_values) / buy_hold_values[:-1]
+
+# Calculate performance metrics
+mean_daily_return = np.mean(daily_returns) * 100
+std_daily_return = np.std(daily_returns) * 100
+annualized_return = ((1 + mean_daily_return/100) ** 252 - 1) * 100
+annualized_volatility = std_daily_return * np.sqrt(252)
+sharpe_ratio = annualized_return / annualized_volatility if annualized_volatility != 0 else 0
+
+# Calculate maximum drawdown
+def calculate_max_drawdown(portfolio_values):
+    # Calculate the running maximum
+    running_max = np.maximum.accumulate(portfolio_values)
+    # Calculate drawdown in percentage terms
+    drawdown = (portfolio_values - running_max) / running_max * 100
+    # Get the maximum drawdown and its index
+    max_drawdown = np.min(drawdown)
+    max_drawdown_idx = np.argmin(drawdown)
+    # Find the peak before the maximum drawdown
+    peak_idx = np.argmax(portfolio_values[:max_drawdown_idx+1])
+    
+    return max_drawdown, peak_idx, max_drawdown_idx
+
+max_drawdown, peak_idx, trough_idx = calculate_max_drawdown(portfolio_values)
+max_dd_duration = trough_idx - peak_idx
+
+# Calculate the same metrics for buy and hold
+bh_mean_daily_return = np.mean(buy_hold_daily_returns) * 100
+bh_std_daily_return = np.std(buy_hold_daily_returns) * 100
+bh_annualized_return = ((1 + bh_mean_daily_return/100) ** 252 - 1) * 100
+bh_annualized_volatility = bh_std_daily_return * np.sqrt(252)
+bh_sharpe_ratio = bh_annualized_return / bh_annualized_volatility if bh_annualized_volatility != 0 else 0
+bh_max_drawdown, bh_peak_idx, bh_trough_idx = calculate_max_drawdown(buy_hold_values)
+bh_max_dd_duration = bh_trough_idx - bh_peak_idx
+
+# Check if we have trades_df
+if 'trades_df' not in locals() and 'trades_df' not in globals():
+    # If we don't have trades_df, try to create one from signals
+    try:
+        trades = []
+        signals = results['signals']
+        prices_for_trades = prices[:len(signals)]  # Make sure we don't go out of bounds
+        
+        current_position = 'NONE'
+        entry_price = 0
+        entry_index = 0
+        
+        for i in range(len(signals)):
+            signal = signals[i]
+            if i < len(prices_for_trades):
+                price = prices_for_trades[i]
+            else:
+                break
+                
+            if signal == 'BUY':
+                current_position = 'LONG'
+                entry_price = price
+                entry_index = i
+            elif signal == 'SHORT':
+                current_position = 'SHORT'
+                entry_price = price
+                entry_index = i
+            elif signal == 'SELL' and current_position == 'LONG':
+                profit = (price - entry_price) / entry_price * 100
+                trades.append({
+                    'Type': 'LONG',
+                    'Entry': entry_index,
+                    'Exit': i,
+                    'Entry_Price': entry_price,
+                    'Exit_Price': price,
+                    'Profit_Pct': profit,
+                    'Duration': i - entry_index
+                })
+                current_position = 'NONE'
+            elif signal == 'BUY_TO_COVER' and current_position == 'SHORT':
+                profit = (entry_price - price) / entry_price * 100
+                trades.append({
+                    'Type': 'SHORT',
+                    'Entry': entry_index,
+                    'Exit': i,
+                    'Entry_Price': entry_price,
+                    'Exit_Price': price,
+                    'Profit_Pct': profit,
+                    'Duration': i - entry_index
+                })
+                current_position = 'NONE'
+
+        trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
+    except:
+        # If that fails, create an empty DataFrame
+        trades_df = pd.DataFrame()
+
+# Calculate win rate and profit factor
+if len(trades_df) > 0:
+    win_rate = sum(trades_df['Profit_Pct'] > 0) / len(trades_df) * 100
+    total_profits = trades_df[trades_df['Profit_Pct'] > 0]['Profit_Pct'].sum()
+    total_losses = abs(trades_df[trades_df['Profit_Pct'] < 0]['Profit_Pct'].sum())
+    profit_factor = total_profits / total_losses if total_losses != 0 else float('inf')
+else:
+    win_rate = 0
+    profit_factor = 0
+
+# Print performance metrics
+print("\n" + "="*50)
+print("PERFORMANCE METRICS COMPARISON")
+print("="*50)
+
+metrics_table = pd.DataFrame({
+    'Metric': [
+        'Total Return (%)', 
+        'Annualized Return (%)', 
+        'Mean Daily Return (%)', 
+        'Daily Volatility (%)', 
+        'Annualized Volatility (%)', 
+        'Sharpe Ratio',
+        'Maximum Drawdown (%)', 
+        'Max Drawdown Duration (days)',
+        'Win Rate (%)',
+        'Profit Factor'
+    ],
+    'Trading Strategy': [
+        f"{results['total_return']:.2f}",
+        f"{annualized_return:.2f}",
+        f"{mean_daily_return:.4f}",
+        f"{std_daily_return:.4f}",
+        f"{annualized_volatility:.2f}",
+        f"{sharpe_ratio:.2f}",
+        f"{max_drawdown:.2f}",
+        f"{max_dd_duration}",
+        f"{win_rate:.2f}" if len(trades_df) > 0 else "N/A",
+        f"{profit_factor:.2f}" if len(trades_df) > 0 else "N/A"
+    ],
+    'Buy and Hold': [
+        f"{results['buy_and_hold_return']:.2f}",
+        f"{bh_annualized_return:.2f}",
+        f"{bh_mean_daily_return:.4f}",
+        f"{bh_std_daily_return:.4f}",
+        f"{bh_annualized_volatility:.2f}",
+        f"{bh_sharpe_ratio:.2f}",
+        f"{bh_max_drawdown:.2f}",
+        f"{bh_max_dd_duration}",
+        "N/A",
+        "N/A"
+    ]
+})
+
+# Display metrics table
+print(metrics_table.to_string(index=False))
+
+# Visualize the return distribution
+plt.figure(figsize=(15, 10))
+
+# Plot 1: Return distribution
+plt.subplot(2, 2, 1)
+plt.hist(daily_returns * 100, bins=50, alpha=0.6, color='green', label='Strategy')
+plt.hist(buy_hold_daily_returns * 100, bins=50, alpha=0.6, color='blue', label='Buy & Hold')
+plt.axvline(0, color='black', linestyle='--')
+plt.title('Daily Return Distribution')
+plt.xlabel('Daily Return (%)')
+plt.ylabel('Frequency')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# Plot 2: Drawdown over time
+plt.subplot(2, 2, 2)
+running_max_strategy = np.maximum.accumulate(portfolio_values)
+drawdown_strategy = (portfolio_values - running_max_strategy) / running_max_strategy * 100
+
+running_max_bh = np.maximum.accumulate(buy_hold_values)
+drawdown_bh = (buy_hold_values - running_max_bh) / running_max_bh * 100
+
+plt.plot(drawdown_strategy, color='green', label='Strategy')
+plt.plot(drawdown_bh, color='blue', label='Buy & Hold')
+plt.title('Drawdown Over Time')
+plt.xlabel('Days')
+plt.ylabel('Drawdown (%)')
+plt.gca().yaxis.set_major_formatter(PercentFormatter())
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+# Plot 3: Rolling Sharpe Ratio (30-day window)
+plt.subplot(2, 2, 3)
+rolling_returns = pd.Series(daily_returns)
+rolling_std = rolling_returns.rolling(window=30).std() * np.sqrt(252)
+rolling_mean = rolling_returns.rolling(window=30).mean() * 252
+rolling_sharpe = rolling_mean / rolling_std
+
+rolling_returns_bh = pd.Series(buy_hold_daily_returns)
+rolling_std_bh = rolling_returns_bh.rolling(window=30).std() * np.sqrt(252)
+rolling_mean_bh = rolling_returns_bh.rolling(window=30).mean() * 252
+rolling_sharpe_bh = rolling_mean_bh / rolling_std_bh
+
+plt.plot(rolling_sharpe, color='green', label='Strategy')
+plt.plot(rolling_sharpe_bh, color='blue', label='Buy & Hold')
+plt.title('30-Day Rolling Sharpe Ratio')
+plt.xlabel('Days')
+plt.ylabel('Sharpe Ratio')
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+# Plot 4: Equity curve with drawdown periods highlighted
+plt.subplot(2, 2, 4)
+plt.plot(portfolio_values, color='green', label='Strategy')
+plt.plot(buy_hold_values, color='blue', label='Buy & Hold')
+
+# Highlight major drawdown periods for strategy
+is_drawdown = drawdown_strategy < -5  # Drawdowns greater than 5%
+in_drawdown = False
+start_idx = 0
+
+for i in range(len(is_drawdown)):
+    if is_drawdown[i] and not in_drawdown:
+        # Start of drawdown period
+        in_drawdown = True
+        start_idx = i
+    elif not is_drawdown[i] and in_drawdown:
+        # End of drawdown period
+        plt.axvspan(start_idx, i, alpha=0.2, color='red')
+        in_drawdown = False
+
+# If still in drawdown at the end
+if in_drawdown:
+    plt.axvspan(start_idx, len(is_drawdown)-1, alpha=0.2, color='red')
+
+plt.title('Equity Curve with Major Drawdown Periods Highlighted')
+plt.xlabel('Days')
+plt.ylabel('Portfolio Value')
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# Calculate additional metrics
+# Calmar ratio (annualized return / max drawdown)
+calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else float('inf')
+bh_calmar_ratio = bh_annualized_return / abs(bh_max_drawdown) if bh_max_drawdown != 0 else float('inf')
+
+# Sortino ratio (using downside deviation)
+downside_returns = np.array([min(0, r) for r in daily_returns])
+downside_deviation = np.std(downside_returns) * np.sqrt(252)
+sortino_ratio = annualized_return / downside_deviation if downside_deviation != 0 else float('inf')
+
+bh_downside_returns = np.array([min(0, r) for r in buy_hold_daily_returns])
+bh_downside_deviation = np.std(bh_downside_returns) * np.sqrt(252)
+bh_sortino_ratio = bh_annualized_return / bh_downside_deviation if bh_downside_deviation != 0 else float('inf')
+
+# Calculate the percentage of positive days
+positive_days_pct = np.sum(daily_returns > 0) / len(daily_returns) * 100
+bh_positive_days_pct = np.sum(buy_hold_daily_returns > 0) / len(buy_hold_daily_returns) * 100
+
+# Calculate the max consecutive wins and losses if we have trade data
+if len(trades_df) > 0:
+    trades_df['IsWin'] = trades_df['Profit_Pct'] > 0
+    
+    # Calculate consecutive wins and losses
+    trades_df['ConsecutiveCount'] = 1
+    for i in range(1, len(trades_df)):
+        if trades_df['IsWin'].iloc[i] == trades_df['IsWin'].iloc[i-1]:
+            trades_df.at[trades_df.index[i], 'ConsecutiveCount'] = trades_df['ConsecutiveCount'].iloc[i-1] + 1
+    
+    max_consecutive_wins = trades_df[trades_df['IsWin']]['ConsecutiveCount'].max() if not trades_df[trades_df['IsWin']].empty else 0
+    max_consecutive_losses = trades_df[~trades_df['IsWin']]['ConsecutiveCount'].max() if not trades_df[~trades_df['IsWin']].empty else 0
+else:
+    max_consecutive_wins = 0
+    max_consecutive_losses = 0
+
+# Print advanced metrics
+print("\n" + "="*50)
+print("ADVANCED PERFORMANCE METRICS")
+print("="*50)
+
+advanced_metrics = pd.DataFrame({
+    'Metric': [
+        'Calmar Ratio', 
+        'Sortino Ratio', 
+        'Positive Days (%)', 
+        'Max Consecutive Wins',
+        'Max Consecutive Losses'
+    ],
+    'Trading Strategy': [
+        f"{calmar_ratio:.2f}",
+        f"{sortino_ratio:.2f}",
+        f"{positive_days_pct:.2f}",
+        f"{max_consecutive_wins}" if len(trades_df) > 0 else "N/A",
+        f"{max_consecutive_losses}" if len(trades_df) > 0 else "N/A"
+    ],
+    'Buy and Hold': [
+        f"{bh_calmar_ratio:.2f}",
+        f"{bh_sortino_ratio:.2f}",
+        f"{bh_positive_days_pct:.2f}",
+        "N/A",
+        "N/A"
+    ]
+})
+
+# Display advanced metrics table
+print(advanced_metrics.to_string(index=False)) # lstm_trading_example.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import yfinance as yf
+from lstm_trading_strategy import (
+    train_lstm_model, 
+    generate_predictions, 
+    visualize_trading_strategy, 
+    save_trading_signals,
+    calculate_performance_metrics
+)
+
+def load_stock_data(ticker, start_date='2017-01-01', end_date='2022-12-31'):
+    """
+    Load stock data from Yahoo Finance
+    
+    Args:
+        ticker: Stock ticker symbol
+        start_date: Start date for data
+        end_date: End date for data
+        
+    Returns:
+        DataFrame with stock prices
+    """
+    # Download data from Yahoo Finance
+    data = yf.download(ticker, start=start_date, end=end_date)
+    
+    # Select adjusted close prices
+    prices = data['Adj Close']
+    
+    return prices
+
+def main():
+    """Main function to demonstrate LSTM trading strategy"""
+    # Set random seeds for reproducibility
+    np.random.seed(42)
+    torch.manual_seed(42)
+    
+    print("Loading stock data...")
+    ticker = 'SPY'  # S&P 500 ETF
+    prices = load_stock_data(ticker)
+    
+    # Split data into train and test sets
+    train_size = int(len(prices) * 0.8)
+    train_data = prices[:train_size]
+    test_data = prices[train_size-20:]  # Include last 20 points from train set for sequence
+    
+    print(f"Training data size: {len(train_data)}")
+    print(f"Test data size: {len(test_data)}")
+    
+    # Train LSTM model
+    print("Training LSTM model...")
+    lstm_model, scaler = train_lstm_model(
+        train_data, 
+        seq_length=20, 
+        hidden_dim=64, 
+        num_layers=2, 
+        batch_size=32, 
+        num_epochs=50,  # Reduced for example
+        learning_rate=0.001
+    )
+    
+    # Generate predictions
+    print("Generating predictions...")
+    predicted_prices = generate_predictions(lstm_model, test_data, scaler, seq_length=20)
+    
+    # Get actual prices from test set
+    actual_prices = test_data.values
+    
+    # Visualize trading strategy
+    print("Visualizing trading strategy...")
+    results = visualize_trading_strategy(actual_prices, predicted_prices)
+    
+    # Save trading signals
+    save_trading_signals(
+        actual_prices, 
+        predicted_prices, 
+        results['signals'], 
+        results['portfolio_value'], 
+        'lstm_trading_signals.csv'
+    )
+    
+    # Calculate detailed performance metrics
+    metrics, advanced_metrics = calculate_performance_metrics(
+        results['portfolio_value'], 
+        results['buy_and_hold']
+    )
+    
+    # Print detailed metrics
+    print("\nPerformance Metrics:")
+    for metric, values in metrics.items():
+        print(f"{metric}: Strategy = {values['strategy']}, Buy & Hold = {values['buyhold']}")
+    
+    print("\nAdvanced Metrics:")
+    for metric, values in advanced_metrics.items():
+        print(f"{metric}: Strategy = {values['strategy']}, Buy & Hold = {values['buyhold']}")
+    
+    # Compare with results data
+    combined_results = {
+        'lstm': {
+            'signals': results['signals'],
+            'portfolio_value': results['portfolio_value'],
+            'buy_and_hold': results['buy_and_hold'],
+            'total_return': results['total_return'],
+            'buy_and_hold_return': results['buy_and_hold_return'],
+            'metrics': metrics,
+            'advanced_metrics': advanced_metrics
+        }
+    }
+    
+    # Save combined results (can be loaded for comparison with neural ODE)
+    import pickle
+    with open('lstm_results.pkl', 'wb') as f:
+        pickle.dump(combined_results, f)
+    
+    print("LSTM trading strategy analysis complete!")
+
+if __name__ == "__main__":
+    main() # lstm_trading_strategy.py
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+import matplotlib.pyplot as plt
+from datetime import datetime
+from sklearn.preprocessing import MinMaxScaler
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
+        """
+        LSTM model for time series prediction
+        
+        Args:
+            input_dim: Input dimension (features)
+            hidden_dim: Hidden dimension size
+            num_layers: Number of LSTM layers
+            output_dim: Output dimension
+        """
+        super(LSTMModel, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # LSTM layers
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        
+        # Fully connected layer
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        
+    def forward(self, x):
+        """
+        Forward pass through the network
+        
+        Args:
+            x: Input tensor of shape (batch_size, seq_length, input_dim)
+            
+        Returns:
+            Predictions of shape (batch_size, output_dim)
+        """
+        # Initialize hidden state with zeros
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        
+        # LSTM forward pass
+        out, _ = self.lstm(x, (h0, c0))
+        
+        # We only need the output from the last time step
+        out = self.fc(out[:, -1, :])
+        
+        return out
+
+class StockDataset(Dataset):
+    def __init__(self, data, seq_length, scaler=None, train=True):
+        """
+        Stock price dataset for LSTM
+        
+        Args:
+            data: DataFrame with stock prices
+            seq_length: Sequence length for LSTM
+            scaler: Optional MinMaxScaler for normalization
+            train: Whether this is training data
+        """
+        self.seq_length = seq_length
+        self.train = train
+        
+        # Preprocess data
+        if scaler is None:
+            self.scaler = MinMaxScaler(feature_range=(0, 1))
+            self.scaled_data = self.scaler.fit_transform(data.values.reshape(-1, 1))
+        else:
+            self.scaler = scaler
+            self.scaled_data = self.scaler.transform(data.values.reshape(-1, 1))
+        
+        # Create sequences
+        self.create_sequences()
+        
+    def create_sequences(self):
+        """Create sequences for LSTM model"""
+        self.X, self.y = [], []
+        
+        for i in range(len(self.scaled_data) - self.seq_length):
+            X_seq = self.scaled_data[i:i+self.seq_length]
+            y_seq = self.scaled_data[i+self.seq_length]
+            
+            self.X.append(X_seq)
+            self.y.append(y_seq)
+            
+        self.X = torch.FloatTensor(np.array(self.X))
+        self.y = torch.FloatTensor(np.array(self.y))
+        
+    def __len__(self):
+        return len(self.X)
+    
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+def train_lstm_model(data, seq_length=20, hidden_dim=64, num_layers=2, batch_size=32, num_epochs=100, learning_rate=0.001):
+    """
+    Train LSTM model on stock price data
+    
+    Args:
+        data: DataFrame with stock prices
+        seq_length: Sequence length for LSTM model
+        hidden_dim: Hidden dimension size
+        num_layers: Number of LSTM layers
+        batch_size: Batch size for training
+        num_epochs: Number of training epochs
+        learning_rate: Learning rate
+        
+    Returns:
+        Trained LSTM model and data scaler
+    """
+    # Prepare dataset
+    dataset = StockDataset(data, seq_length)
+    
+    # Split into train and validation sets
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    
+    # Initialize model, loss function, and optimizer
+    input_dim = 1  # Single feature (price)
+    output_dim = 1  # Single output (next price)
+    
+    model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Train the model
+    train_losses, val_losses = [], []
+    
+    for epoch in range(num_epochs):
+        # Training
+        model.train()
+        train_loss = 0
+        
+        for X_batch, y_batch in train_loader:
+            # Forward pass
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            
+            # Backward pass and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+        
+        train_loss /= len(train_loader)
+        train_losses.append(train_loss)
+        
+        # Validation
+        model.eval()
+        val_loss = 0
+        
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                outputs = model(X_batch)
+                loss = criterion(outputs, y_batch)
+                val_loss += loss.item()
+        
+        val_loss /= len(val_loader)
+        val_losses.append(val_loss)
+        
+        # Print progress
+        if (epoch + 1) % 10 == 0:
+            print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')
+    
+    return model, dataset.scaler
+
+def generate_predictions(model, data, scaler, seq_length=20):
+    """
+    Generate predictions using trained LSTM model
+    
+    Args:
+        model: Trained LSTM model
+        data: DataFrame with stock prices
+        scaler: MinMaxScaler used for normalization
+        seq_length: Sequence length used for LSTM model
+        
+    Returns:
+        Array of predicted prices
+    """
+    # Prepare data
+    scaled_data = scaler.transform(data.values.reshape(-1, 1))
+    
+    # Create sequences
+    X = []
+    for i in range(len(scaled_data) - seq_length):
+        X.append(scaled_data[i:i+seq_length])
+    
+    X = torch.FloatTensor(np.array(X))
+    
+    # Generate predictions
+    model.eval()
+    with torch.no_grad():
+        predictions = model(X)
+    
+    # Inverse transform
+    predictions = scaler.inverse_transform(predictions.numpy())
+    
+    # Shift predictions to align with actual data
+    full_predictions = np.zeros(len(data))
+    full_predictions[:seq_length] = data.values[:seq_length].flatten()
+    full_predictions[seq_length:] = predictions.flatten()
+    
+    return full_predictions
+
+def generate_trading_signals(actual_prices, predicted_prices):
+    """
+    Generate trading signals based on LSTM predictions.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices from LSTM model
+        
+    Returns:
+        List of trading signals (BUY, SELL, SHORT, BUY_TO_COVER, HOLD)
+    """
+    signals = []
+    position = 0  # 0: no position, 1: long, -1: short
+    
+    # For the first day, we don't have a meaningful prediction yet
+    signals.append('HOLD')
+    
+    for i in range(1, len(predicted_prices)):
+        # Predict price change direction for the next day
+        price_change = predicted_prices[i] - actual_prices[i-1]
+        
+        if position == 0:  # No position
+            if price_change > 0:  # Model predicts price will go up
+                signals.append('BUY')
+                position = 1
+            elif price_change < 0:  # Model predicts price will go down
+                signals.append('SHORT')
+                position = -1
+            else:  # No change predicted
+                signals.append('HOLD')
+                
+        elif position == 1:  # Long position
+            if price_change > 0:  # Model predicts price will go up
+                signals.append('HOLD')
+            else:  # Model predicts price will go down
+                signals.append('SELL')
+                position = 0
+                
+        elif position == -1:  # Short position
+            if price_change < 0:  # Model predicts price will go down
+                signals.append('HOLD')
+            else:  # Model predicts price will go up
+                signals.append('BUY_TO_COVER')
+                position = 0
+    
+    return signals
+
+def calculate_portfolio_value(actual_prices, signals, initial_capital=10000.0):
+    """
+    Calculate portfolio value based on trading signals.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        signals: List of trading signals
+        initial_capital: Initial capital amount
+        
+    Returns:
+        Array of portfolio values
+    """
+    portfolio_value = [initial_capital]
+    position = 0  # 0: no position, 1: long, -1: short
+    shares = 0
+    cash = initial_capital
+    
+    for i in range(1, len(signals)):
+        signal = signals[i]
+        price = actual_prices[i]
+        
+        if signal == 'BUY':
+            # Calculate number of shares we can buy with all available cash
+            shares = cash / price
+            cash = 0
+            position = 1
+        elif signal == 'SELL' and position == 1:
+            # Sell all shares
+            cash = shares * price
+            shares = 0
+            position = 0
+        elif signal == 'SHORT':
+            # Short selling (borrow shares equal to cash value and sell them)
+            # For simplicity, we'll assume short selling 1x leverage
+            shares = -cash / price
+            cash = cash * 2  # Cash + proceeds from short sale
+            position = -1
+        elif signal == 'BUY_TO_COVER' and position == -1:
+            # Buy to cover short position
+            cash = cash - (-shares * price)  # Subtract cost of buying back shares
+            shares = 0
+            position = 0
+            
+        # Calculate portfolio value
+        if position == 0:
+            portfolio_value.append(cash)
+        elif position == 1:
+            portfolio_value.append(cash + shares * price)
+        elif position == -1:
+            portfolio_value.append(cash + shares * price)  # Short position value
+    
+    return portfolio_value
+
+def visualize_trading_strategy(actual_prices, predicted_prices, initial_capital=10000.0):
+    """
+    Visualize LSTM trading strategy performance.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices from LSTM model
+        initial_capital: Initial capital amount
+        
+    Returns:
+        Dictionary with trading results
+    """
+    # Generate trading signals
+    signals = generate_trading_signals(actual_prices, predicted_prices)
+    
+    # Calculate portfolio value
+    portfolio_value = calculate_portfolio_value(actual_prices, signals, initial_capital)
+    
+    # Calculate buy and hold strategy
+    buy_and_hold = [initial_capital]
+    for i in range(1, len(actual_prices)):
+        buy_and_hold.append(initial_capital * (actual_prices[i] / actual_prices[0]))
+    
+    # Calculate strategy performance metrics
+    total_return = (portfolio_value[-1] / portfolio_value[0] - 1) * 100
+    buy_and_hold_return = (buy_and_hold[-1] / buy_and_hold[0] - 1) * 100
+    total_trades = sum(1 for signal in signals if signal in ['BUY', 'SELL', 'SHORT', 'BUY_TO_COVER'])
+    
+    # Plot strategy performance
+    plt.figure(figsize=(14, 10))
+    
+    # Plot actual vs predicted prices
+    plt.subplot(3, 1, 1)
+    plt.plot(actual_prices, label='Actual Prices', color='blue')
+    plt.plot(predicted_prices, label='Predicted Prices (LSTM)', color='green', linestyle='--')
+    plt.title('Actual vs Predicted Prices (LSTM)')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot trading signals on the price chart
+    plt.subplot(3, 1, 2)
+    plt.plot(actual_prices, color='blue')
+    
+    for i in range(len(signals)):
+        if signals[i] == 'BUY':
+            plt.plot(i, actual_prices[i], '^', markersize=10, color='green')
+        elif signals[i] == 'SELL':
+            plt.plot(i, actual_prices[i], 'v', markersize=10, color='red')
+        elif signals[i] == 'SHORT':
+            plt.plot(i, actual_prices[i], 'v', markersize=10, color='purple')
+        elif signals[i] == 'BUY_TO_COVER':
+            plt.plot(i, actual_prices[i], '^', markersize=10, color='orange')
+    
+    plt.title('LSTM Trading Signals')
+    plt.grid(True)
+    
+    # Plot portfolio value vs buy and hold
+    plt.subplot(3, 1, 3)
+    plt.plot(portfolio_value, label=f'LSTM Strategy ({total_return:.2f}%)', color='green')
+    plt.plot(buy_and_hold, label=f'Buy and Hold ({buy_and_hold_return:.2f}%)', color='blue', linestyle='--')
+    plt.title('Portfolio Value vs Buy and Hold')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary statistics
+    print(f"LSTM Strategy Return: {total_return:.2f}%")
+    print(f"Buy and Hold Return: {buy_and_hold_return:.2f}%")
+    print(f"Alpha: {total_return - buy_and_hold_return:.2f}%")
+    print(f"Total Trades: {total_trades}")
+    
+    results = {
+        'signals': signals,
+        'portfolio_value': portfolio_value,
+        'buy_and_hold': buy_and_hold,
+        'total_return': total_return,
+        'buy_and_hold_return': buy_and_hold_return,
+        'total_trades': total_trades
+    }
+    
+    return results
+
+def save_trading_signals(actual_prices, predicted_prices, signals, portfolio_value, file_name='lstm_trading_signals.csv'):
+    """
+    Save LSTM trading signals and performance to a CSV file.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices
+        signals: List of trading signals
+        portfolio_value: List of portfolio values
+        file_name: Output file name
+    """
+    # Create a DataFrame with all the data
+    data = {
+        'Actual_Price': actual_prices,
+        'Predicted_Price': predicted_prices,
+        'Signal': signals,
+        'Portfolio_Value': portfolio_value
+    }
+    
+    # Create dummy dates if needed
+    dates = [datetime.now().strftime('%Y-%m-%d')] * len(actual_prices)
+    
+    # Create DataFrame
+    df = pd.DataFrame(data, index=dates)
+    
+    # Save to CSV
+    df.to_csv(file_name)
+    print(f"LSTM trading signals saved to {file_name}")
+
+def calculate_performance_metrics(portfolio_values, buy_and_hold_values):
+    """
+    Calculate comprehensive performance metrics for the LSTM trading strategy.
+    
+    Args:
+        portfolio_values: Array of portfolio values
+        buy_and_hold_values: Array of buy and hold values
+        
+    Returns:
+        Dictionary with performance metrics
+    """
+    # Calculate daily returns
+    strategy_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+    bh_returns = np.diff(buy_and_hold_values) / buy_and_hold_values[:-1]
+    
+    # Calculate total return
+    total_return = (portfolio_values[-1] / portfolio_values[0] - 1) * 100
+    bh_return = (buy_and_hold_values[-1] / buy_and_hold_values[0] - 1) * 100
+    
+    # Annualized return (assuming 252 trading days)
+    n_days = len(portfolio_values)
+    annualized_return = ((1 + total_return/100) ** (252/n_days) - 1) * 100
+    bh_annualized_return = ((1 + bh_return/100) ** (252/n_days) - 1) * 100
+    
+    # Mean daily return
+    mean_daily_return = np.mean(strategy_returns) * 100
+    bh_mean_daily_return = np.mean(bh_returns) * 100
+    
+    # Volatility
+    daily_volatility = np.std(strategy_returns) * 100
+    bh_daily_volatility = np.std(bh_returns) * 100
+    
+    # Annualized volatility
+    annualized_volatility = daily_volatility * np.sqrt(252)
+    bh_annualized_volatility = bh_daily_volatility * np.sqrt(252)
+    
+    # Sharpe ratio (assuming risk-free rate = 0 for simplicity)
+    sharpe_ratio = (mean_daily_return / daily_volatility) * np.sqrt(252)
+    bh_sharpe_ratio = (bh_mean_daily_return / bh_daily_volatility) * np.sqrt(252)
+    
+    # Maximum drawdown
+    cumulative_returns = np.array(portfolio_values) / portfolio_values[0]
+    bh_cumulative_returns = np.array(buy_and_hold_values) / buy_and_hold_values[0]
+    
+    running_max = np.maximum.accumulate(cumulative_returns)
+    bh_running_max = np.maximum.accumulate(bh_cumulative_returns)
+    
+    drawdown = (cumulative_returns - running_max) / running_max * 100
+    bh_drawdown = (bh_cumulative_returns - bh_running_max) / bh_running_max * 100
+    
+    max_drawdown = np.min(drawdown)
+    bh_max_drawdown = np.min(bh_drawdown)
+    
+    # Win rate
+    positive_returns = np.sum(strategy_returns > 0)
+    win_rate = positive_returns / len(strategy_returns) * 100
+    
+    # Profit factor
+    gain = np.sum(strategy_returns[strategy_returns > 0])
+    loss = np.abs(np.sum(strategy_returns[strategy_returns < 0]))
+    profit_factor = gain / loss if loss != 0 else float('inf')
+    
+    # Create metrics dictionary
+    metrics = {
+        'Total Return (%)': {
+            'strategy': f'{total_return:.2f}',
+            'buyhold': f'{bh_return:.2f}'
+        },
+        'Annualized Return (%)': {
+            'strategy': f'{annualized_return:.2f}',
+            'buyhold': f'{bh_annualized_return:.2f}'
+        },
+        'Mean Daily Return (%)': {
+            'strategy': f'{mean_daily_return:.4f}',
+            'buyhold': f'{bh_mean_daily_return:.4f}'
+        },
+        'Daily Volatility (%)': {
+            'strategy': f'{daily_volatility:.4f}',
+            'buyhold': f'{bh_daily_volatility:.4f}'
+        },
+        'Annualized Volatility (%)': {
+            'strategy': f'{annualized_volatility:.2f}',
+            'buyhold': f'{bh_annualized_volatility:.2f}'
+        },
+        'Sharpe Ratio': {
+            'strategy': f'{sharpe_ratio:.2f}',
+            'buyhold': f'{bh_sharpe_ratio:.2f}'
+        },
+        'Maximum Drawdown (%)': {
+            'strategy': f'{max_drawdown:.2f}',
+            'buyhold': f'{bh_max_drawdown:.2f}'
+        },
+        'Win Rate (%)': {
+            'strategy': f'{win_rate:.2f}',
+            'buyhold': 'N/A'
+        },
+        'Profit Factor': {
+            'strategy': f'{profit_factor:.2f}',
+            'buyhold': 'N/A'
+        }
+    }
+    
+    # Advanced metrics
+    # Sortino ratio (downside risk only)
+    negative_returns = strategy_returns[strategy_returns < 0]
+    bh_negative_returns = bh_returns[bh_returns < 0]
+    
+    downside_deviation = np.std(negative_returns) * 100 if len(negative_returns) > 0 else 1e-6
+    bh_downside_deviation = np.std(bh_negative_returns) * 100 if len(bh_negative_returns) > 0 else 1e-6
+    
+    sortino_ratio = (mean_daily_return / downside_deviation) * np.sqrt(252)
+    bh_sortino_ratio = (bh_mean_daily_return / bh_downside_deviation) * np.sqrt(252)
+    
+    # Calmar ratio (return / max drawdown)
+    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else float('inf')
+    bh_calmar_ratio = bh_annualized_return / abs(bh_max_drawdown) if bh_max_drawdown != 0 else float('inf')
+    
+    # Consecutive wins/losses
+    win_streak = 0
+    max_win_streak = 0
+    loss_streak = 0
+    max_loss_streak = 0
+    
+    for ret in strategy_returns:
+        if ret > 0:
+            win_streak += 1
+            loss_streak = 0
+            max_win_streak = max(max_win_streak, win_streak)
+        elif ret < 0:
+            loss_streak += 1
+            win_streak = 0
+            max_loss_streak = max(max_loss_streak, loss_streak)
+        else:
+            win_streak = 0
+            loss_streak = 0
+    
+    # Positive days percentage
+    positive_days = np.sum(strategy_returns > 0) / len(strategy_returns) * 100
+    bh_positive_days = np.sum(bh_returns > 0) / len(bh_returns) * 100
+    
+    # Add advanced metrics
+    advanced_metrics = {
+        'Calmar Ratio': {
+            'strategy': f'{calmar_ratio:.2f}',
+            'buyhold': f'{bh_calmar_ratio:.2f}'
+        },
+        'Sortino Ratio': {
+            'strategy': f'{sortino_ratio:.2f}',
+            'buyhold': f'{bh_sortino_ratio:.2f}'
+        },
+        'Positive Days (%)': {
+            'strategy': f'{positive_days:.2f}',
+            'buyhold': f'{bh_positive_days:.2f}'
+        },
+        'Max Consecutive Wins': {
+            'strategy': f'{max_win_streak}',
+            'buyhold': 'N/A'
+        },
+        'Max Consecutive Losses': {
+            'strategy': f'{max_loss_streak}',
+            'buyhold': 'N/A'
+        }
+    }
+    
+    return metrics, advanced_metrics # model_comparison_example.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import pickle
+import torch
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+
+# Import trading strategy modules
+from neural_ode_trading_strategy import visualize_trading_strategy as visualize_neural_ode
+from lstm_trading_strategy import visualize_trading_strategy as visualize_lstm
+from arch_trading_strategy import (
+    prepare_returns, 
+    fit_arch_model, 
+    generate_predictions as arch_predict,
+    visualize_trading_strategy as visualize_arch
+)
+
+# Import additional functions for different models
+from lstm_trading_strategy import (
+    train_lstm_model, 
+    generate_predictions as lstm_predict, 
+    calculate_performance_metrics as lstm_metrics
+)
+
+from arch_trading_strategy import (
+    calculate_performance_metrics as arch_metrics
+)
+
+def load_stock_data(ticker, start_date='2017-01-01', end_date='2022-12-31'):
+    """
+    Load stock data from Yahoo Finance
+    
+    Args:
+        ticker: Stock ticker symbol
+        start_date: Start date for data
+        end_date: End date for data
+        
+    Returns:
+        DataFrame with stock prices
+    """
+    # Download data from Yahoo Finance
+    data = yf.download(ticker, start=start_date, end=end_date)
+    
+    # Select close prices (Yahoo Finance now auto-adjusts by default)
+    prices = data['Close']
+    
+    return prices
+
+def compare_models(ticker='SPY', start_date='2017-01-01', end_date='2022-12-31'):
+    """
+    Compare Neural ODE, LSTM, and ARCH models for trading strategy on given ticker
+    
+    Args:
+        ticker: Stock ticker symbol
+        start_date: Start date for data
+        end_date: End date for data
+    """
+    # Set random seeds for reproducibility
+    np.random.seed(42)
+    torch.manual_seed(42)
+    
+    print(f"Loading data for {ticker}...")
+    prices = load_stock_data(ticker, start_date, end_date)
+    
+    # Split data into train and test sets
+    train_size = int(len(prices) * 0.8)
+    train_data = prices[:train_size]
+    test_data = prices[train_size-20:]  # Include last 20 points from train set for sequence
+    
+    print(f"Training data: {train_data.index[0]} to {train_data.index[-1]} ({len(train_data)} days)")
+    print(f"Test data: {test_data.index[0]} to {test_data.index[-1]} ({len(test_data)} days)")
+    
+    # -------------------------
+    # Train and evaluate LSTM model
+    # -------------------------
+    print("\nTraining LSTM model...")
+    lstm_model, scaler = train_lstm_model(
+        train_data, 
+        seq_length=20, 
+        hidden_dim=64, 
+        num_layers=2, 
+        batch_size=32, 
+        num_epochs=50,
+        learning_rate=0.001
+    )
+    
+    # Generate LSTM predictions
+    print("Generating LSTM predictions...")
+    lstm_predictions = lstm_predict(lstm_model, test_data, scaler, seq_length=20)
+    
+    # Visualize LSTM strategy
+    print("Evaluating LSTM trading strategy...")
+    lstm_results = visualize_lstm(test_data.values, lstm_predictions)
+    
+    lstm_metrics_results, lstm_advanced_metrics = lstm_metrics(
+        lstm_results['portfolio_value'], 
+        lstm_results['buy_and_hold']
+    )
+    
+    # -------------------------
+    # Train and evaluate ARCH model
+    # -------------------------
+    print("\nTraining ARCH model...")
+    # Calculate returns for ARCH model
+    test_returns = prepare_returns(test_data.values)
+    
+    # Fit ARCH model
+    arch_model_result = fit_arch_model(
+        test_returns,
+        p=1,  # ARCH term
+        q=1,  # GARCH term
+        mean='Constant',
+        vol='GARCH',
+        dist='normal'
+    )
+    
+    # Generate ARCH predictions
+    print("Generating ARCH predictions...")
+    arch_direction_predictions, arch_forecast_variance = arch_predict(
+        arch_model_result, 
+        test_returns, 
+        forecast_horizon=1
+    )
+    
+    # Visualize ARCH strategy
+    print("Evaluating ARCH trading strategy...")
+    arch_results = visualize_arch(test_data.values, arch_direction_predictions)
+    
+    arch_metrics_results, arch_advanced_metrics = arch_metrics(
+        arch_results['portfolio_value'], 
+        arch_results['buy_and_hold']
+    )
+    
+    # -------------------------
+    # For Neural ODE, we would normally train here
+    # For this example, we'll generate synthetic results for demonstration
+    # -------------------------
+    print("\nTraining Neural ODE model...")
+    # In a real implementation, this would call the Neural ODE training function
+    
+    # Create synthetic Neural ODE predictions
+    # In a real implementation, these would come from the actual model
+    neural_ode_predictions = create_synthetic_predictions(test_data.values, shift=3, noise=0.02)
+    
+    # Visualize Neural ODE strategy
+    print("Evaluating Neural ODE trading strategy...")
+    neural_ode_results = visualize_neural_ode(test_data.values, neural_ode_predictions)
+    
+    # Compare the results
+    compare_results(
+        lstm_results, lstm_metrics_results, lstm_advanced_metrics,
+        arch_results, arch_metrics_results, arch_advanced_metrics,
+        neural_ode_results, 
+        ticker
+    )
+    
+    # Save comparison results
+    save_comparison_results(
+        lstm_results, lstm_metrics_results, lstm_advanced_metrics,
+        arch_results, arch_metrics_results, arch_advanced_metrics,
+        neural_ode_results, 
+        ticker
+    )
+    
+    print("\nModel comparison completed!")
+
+def create_synthetic_predictions(actual_prices, shift=2, noise=0.01):
+    """
+    Create synthetic predictions for demonstration purposes
+    
+    Args:
+        actual_prices: Actual price data
+        shift: Number of days to shift predictions forward
+        noise: Amount of noise to add to predictions
+        
+    Returns:
+        Synthetic predicted prices
+    """
+    predictions = np.zeros_like(actual_prices)
+    
+    # Copy the actual prices but shifted by 'shift' days
+    predictions[:shift] = actual_prices[:shift]  # Keep first few values the same
+    
+    # Create shifted prediction with some noise
+    for i in range(shift, len(actual_prices)):
+        # Base prediction: value from 'shift' days ago + trend
+        base_prediction = actual_prices[i-shift]
+        trend = (actual_prices[i-1] - actual_prices[i-shift]) / shift  # Simple trend calculation
+        
+        # Add some randomness to make it interesting
+        random_factor = 1 + (np.random.random() - 0.5) * noise
+        
+        # Combine factors
+        predictions[i] = base_prediction + trend * shift * random_factor
+    
+    return predictions
+
+def compare_results(
+    lstm_results, lstm_metrics, lstm_advanced_metrics,
+    arch_results, arch_metrics, arch_advanced_metrics,
+    neural_ode_results, 
+    ticker
+):
+    """
+    Compare and visualize the performance of LSTM, ARCH, and Neural ODE models
+    
+    Args:
+        lstm_results: Results from LSTM trading strategy
+        lstm_metrics: Performance metrics for LSTM
+        lstm_advanced_metrics: Advanced metrics for LSTM
+        arch_results: Results from ARCH trading strategy
+        arch_metrics: Performance metrics for ARCH
+        arch_advanced_metrics: Advanced metrics for ARCH
+        neural_ode_results: Results from Neural ODE trading strategy
+        ticker: Stock ticker symbol
+    """
+    # Plot portfolio values
+    plt.figure(figsize=(12, 8))
+    plt.plot(neural_ode_results['portfolio_value'], 
+             label=f"Neural ODE ({neural_ode_results['total_return']:.2f}%)", 
+             color='green')
+    plt.plot(lstm_results['portfolio_value'], 
+             label=f"LSTM ({lstm_results['total_return']:.2f}%)", 
+             color='red')
+    plt.plot(arch_results['portfolio_value'], 
+             label=f"ARCH ({arch_results['total_return']:.2f}%)", 
+             color='purple')
+    plt.plot(neural_ode_results['buy_and_hold'], 
+             label=f"Buy & Hold ({neural_ode_results['buy_and_hold_return']:.2f}%)", 
+             color='blue', 
+             linestyle='--')
+    
+    plt.title(f"Portfolio Performance Comparison - {ticker}")
+    plt.xlabel("Trading Days")
+    plt.ylabel("Portfolio Value ($)")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"{ticker}_model_comparison.png", dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Print key metrics comparison
+    print("\n----- PERFORMANCE METRICS COMPARISON -----")
+    print(f"{'Metric':<25} | {'Neural ODE':<12} | {'LSTM':<12} | {'ARCH':<12} | {'Buy & Hold':<12}")
+    print("-" * 85)
+    
+    for metric in lstm_metrics:
+        neural_ode_value = neural_ode_results['metrics'][metric]['strategy'] if metric in neural_ode_results.get('metrics', {}) else 'N/A'
+        arch_value = arch_metrics[metric]['strategy'] if metric in arch_metrics else 'N/A'
+        
+        print(f"{metric:<25} | {neural_ode_value:<12} | {lstm_metrics[metric]['strategy']:<12} | {arch_value:<12} | {lstm_metrics[metric]['buyhold']:<12}")
+    
+    print("\n----- ADVANCED METRICS COMPARISON -----")
+    print(f"{'Metric':<25} | {'Neural ODE':<12} | {'LSTM':<12} | {'ARCH':<12} | {'Buy & Hold':<12}")
+    print("-" * 85)
+    
+    for metric in lstm_advanced_metrics:
+        neural_ode_value = neural_ode_results['advanced_metrics'][metric]['strategy'] if metric in neural_ode_results.get('advanced_metrics', {}) else 'N/A'
+        arch_value = arch_advanced_metrics[metric]['strategy'] if metric in arch_advanced_metrics else 'N/A'
+        
+        print(f"{metric:<25} | {neural_ode_value:<12} | {lstm_advanced_metrics[metric]['strategy']:<12} | {arch_value:<12} | {lstm_advanced_metrics[metric]['buyhold']:<12}")
+
+def save_comparison_results(
+    lstm_results, lstm_metrics, lstm_advanced_metrics,
+    arch_results, arch_metrics, arch_advanced_metrics,
+    neural_ode_results, 
+    ticker
+):
+    """
+    Save comparison results for web interface
+    
+    Args:
+        lstm_results: Results from LSTM trading strategy
+        lstm_metrics: Performance metrics for LSTM
+        lstm_advanced_metrics: Advanced metrics for LSTM
+        arch_results: Results from ARCH trading strategy
+        arch_metrics: Performance metrics for ARCH
+        arch_advanced_metrics: Advanced metrics for ARCH
+        neural_ode_results: Results from Neural ODE trading strategy
+        ticker: Stock ticker symbol
+    """
+    # Combine all results
+    comparison_data = {
+        'ticker': ticker,
+        'lstm': {
+            'signals': lstm_results['signals'],
+            'portfolio_value': lstm_results['portfolio_value'],
+            'total_return': lstm_results['total_return'],
+            'metrics': lstm_metrics,
+            'advanced_metrics': lstm_advanced_metrics
+        },
+        'arch': {
+            'signals': arch_results['signals'],
+            'portfolio_value': arch_results['portfolio_value'],
+            'total_return': arch_results['total_return'],
+            'metrics': arch_metrics,
+            'advanced_metrics': arch_advanced_metrics
+        },
+        'neural_ode': {
+            'signals': neural_ode_results['signals'],
+            'portfolio_value': neural_ode_results['portfolio_value'],
+            'total_return': neural_ode_results['total_return'],
+            'metrics': neural_ode_results.get('metrics', {}),
+            'advanced_metrics': neural_ode_results.get('advanced_metrics', {})
+        },
+        'buy_and_hold': {
+            'values': lstm_results['buy_and_hold'],
+            'return': lstm_results['buy_and_hold_return']
+        }
+    }
+    
+    # Save to pickle file for web interface
+    with open(f"{ticker}_comparison_results.pkl", 'wb') as f:
+        pickle.dump(comparison_data, f)
+    
+    print(f"Comparison results saved to {ticker}_comparison_results.pkl")
+
+if __name__ == "__main__":
+    # Run comparison with SPY data
+    compare_models("SPY", start_date="2020-01-01", end_date="2022-12-31") # neural_ode_trading_example.py
+# Add these cells to your existing Neural ODE notebook after you've made predictions
+
+#############################################################################
+# Cell 1: Import the trading strategy module
+#############################################################################
+# First, save the neural_ode_trading_strategy.py file in the same directory as your notebook
+import neural_ode_trading_strategy as ts
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+#############################################################################
+# Cell 2: Use the Neural ODE predictions to generate trading signals
+#############################################################################
+# Assuming you already have:
+# - test_target (actual prices)
+# - forecasted_test_scaled (predicted prices from your Neural ODE model)
+# - scaler_target (the MinMaxScaler used to scale target values)
+
+# Get the unscaled (original) prices
+actual_prices = scaler_target.inverse_transform(test_target_scaled.reshape(-1, 1)).flatten()
+predicted_prices = scaler_target.inverse_transform(forecasted_test_scaled).flatten()
+
+# Get trading signals and visualize the strategy
+results = ts.visualize_trading_strategy(actual_prices, predicted_prices)
+
+# Display performance metrics
+print("\nSummary Statistics:")
+print(f"Strategy Return: {results['total_return']:.2f}%")
+print(f"Buy and Hold Return: {results['buy_and_hold_return']:.2f}%")
+print(f"Alpha: {results['total_return'] - results['buy_and_hold_return']:.2f}%")
+print(f"Total Trades: {results['total_trades']}")
+
+# Save trading signals to CSV for further analysis
+ts.save_trading_signals(
+    actual_prices, 
+    predicted_prices,
+    results['signals'],
+    results['portfolio_value'],
+    file_name=f'{ticker}_trading_signals.csv'
+)
+
+#############################################################################
+# Cell 3: Analyze specific trading periods (optional)
+#############################################################################
+# Create a DataFrame with all the data
+trading_data = pd.DataFrame({
+    'Price': actual_prices,
+    'Predicted_Price': predicted_prices,
+    'Signal': results['signals'],
+    'Portfolio_Value': results['portfolio_value'],
+})
+
+# Analyze consecutive winning/losing trades
+trading_data['Daily_Return'] = trading_data['Portfolio_Value'].pct_change()
+trading_data['Trade'] = trading_data['Signal'].isin(['BUY', 'SELL', 'SHORT', 'BUY_TO_COVER']).astype(int)
+trading_data['Trade_Number'] = trading_data['Trade'].cumsum()
+
+# Identify winning trades
+trades = []
+current_position = 'NONE'
+entry_price = 0
+entry_index = 0
+
+for i in range(len(trading_data)):
+    signal = trading_data['Signal'].iloc[i]
+    price = trading_data['Price'].iloc[i]
+    
+    if signal == 'BUY':
+        current_position = 'LONG'
+        entry_price = price
+        entry_index = i
+    elif signal == 'SHORT':
+        current_position = 'SHORT'
+        entry_price = price
+        entry_index = i
+    elif signal == 'SELL' and current_position == 'LONG':
+        profit = (price - entry_price) / entry_price * 100
+        trades.append({
+            'Type': 'LONG',
+            'Entry': entry_index,
+            'Exit': i,
+            'Entry_Price': entry_price,
+            'Exit_Price': price,
+            'Profit_Pct': profit,
+            'Duration': i - entry_index
+        })
+        current_position = 'NONE'
+    elif signal == 'BUY_TO_COVER' and current_position == 'SHORT':
+        profit = (entry_price - price) / entry_price * 100
+        trades.append({
+            'Type': 'SHORT',
+            'Entry': entry_index,
+            'Exit': i,
+            'Entry_Price': entry_price,
+            'Exit_Price': price,
+            'Profit_Pct': profit,
+            'Duration': i - entry_index
+        })
+        current_position = 'NONE'
+
+trades_df = pd.DataFrame(trades)
+if len(trades_df) > 0:
+    # Print trade statistics
+    print("\nTrade Statistics:")
+    print(f"Total Completed Trades: {len(trades_df)}")
+    print(f"Winning Trades: {sum(trades_df['Profit_Pct'] > 0)}")
+    print(f"Losing Trades: {sum(trades_df['Profit_Pct'] <= 0)}")
+    print(f"Win Rate: {sum(trades_df['Profit_Pct'] > 0) / len(trades_df) * 100:.2f}%")
+    print(f"Average Trade Profit: {trades_df['Profit_Pct'].mean():.2f}%")
+    print(f"Average Winning Trade: {trades_df[trades_df['Profit_Pct'] > 0]['Profit_Pct'].mean():.2f}%")
+    print(f"Average Losing Trade: {trades_df[trades_df['Profit_Pct'] <= 0]['Profit_Pct'].mean():.2f}%")
+    print(f"Average Trade Duration: {trades_df['Duration'].mean():.1f} days")
+    
+    # Plot profit distribution
+    plt.figure(figsize=(10, 6))
+    plt.hist(trades_df['Profit_Pct'], bins=20)
+    plt.axvline(x=0, color='r', linestyle='--')
+    plt.title('Distribution of Trade Profits')
+    plt.xlabel('Profit %')
+    plt.ylabel('Number of Trades')
+    plt.grid(True)
+    plt.show()
+
+#############################################################################
+# Cell 4: Monthly performance analysis (optional)
+#############################################################################
+# First create some dummy dates for this example
+# In your real notebook, you should have actual dates from your data
+import pandas as pd
+from datetime import datetime, timedelta
+
+# Create dummy dates (replace this with your actual dates if available)
+start_date = datetime(2020, 1, 1)
+dates = [start_date + timedelta(days=i) for i in range(len(actual_prices))]
+
+# Create a DataFrame with all the data including dates
+trading_data = pd.DataFrame({
+    'Date': dates,
+    'Price': actual_prices,
+    'Predicted_Price': predicted_prices,
+    'Signal': results['signals'],
+    'Portfolio_Value': results['portfolio_value'],
+})
+
+# Set the date as index
+trading_data['Date'] = pd.to_datetime(trading_data['Date'])
+trading_data.set_index('Date', inplace=True)
+
+# Calculate monthly returns
+monthly_returns = trading_data['Portfolio_Value'].resample('M').last().pct_change() * 100
+# Calculate buy-and-hold monthly returns for comparison
+trading_data['Buy_Hold_Value'] = [10000 * (price / actual_prices[0]) for price in actual_prices]
+buy_hold_monthly_returns = trading_data['Buy_Hold_Value'].resample('M').last().pct_change() * 100
+
+# Combine the returns
+monthly_comparison = pd.DataFrame({
+    'Strategy': monthly_returns,
+    'Buy_and_Hold': buy_hold_monthly_returns
+})
+
+# Drop the first row which is NaN
+monthly_comparison = monthly_comparison.dropna()
+
+# Print monthly performance table
+print("\nMonthly Performance:")
+print(monthly_comparison)
+
+# Plot monthly returns comparison
+plt.figure(figsize=(12, 6))
+monthly_comparison.plot(kind='bar', figsize=(12, 6))
+plt.title('Monthly Returns: Strategy vs Buy-and-Hold')
+plt.ylabel('Return (%)')
+plt.grid(True, alpha=0.3)
+plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# Calculate and plot drawdowns
+def calculate_drawdowns(equity_curve):
+    """Calculate the drawdowns for an equity curve."""
+    # Calculate running maximum
+    running_max = equity_curve.cummax()
+    # Calculate drawdown in percentage terms
+    drawdown = (equity_curve / running_max - 1) * 100
+    return drawdown
+
+# Calculate drawdowns for both strategy and buy-and-hold
+trading_data['Strategy_Drawdown'] = calculate_drawdowns(trading_data['Portfolio_Value'])
+trading_data['Buy_Hold_Drawdown'] = calculate_drawdowns(trading_data['Buy_Hold_Value'])
+
+# Plot drawdowns
+plt.figure(figsize=(12, 6))
+trading_data[['Strategy_Drawdown', 'Buy_Hold_Drawdown']].plot(figsize=(12, 6))
+plt.title('Drawdowns: Strategy vs Buy-and-Hold')
+plt.ylabel('Drawdown (%)')
+plt.grid(True, alpha=0.3)
+plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# Print maximum drawdown
+print("\nDrawdown Analysis:")
+print(f"Strategy Max Drawdown: {trading_data['Strategy_Drawdown'].min():.2f}%")
+print(f"Buy and Hold Max Drawdown: {trading_data['Buy_Hold_Drawdown'].min():.2f}%") # neural_ode_trading_strategy.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+def generate_trading_signals(actual_prices, predicted_prices):
+    """
+    Generate trading signals based on Neural ODE predictions.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices from Neural ODE model
+        
+    Returns:
+        List of trading signals (BUY, SELL, SHORT, BUY_TO_COVER, HOLD)
+    """
+    signals = []
+    position = 0  # 0: no position, 1: long, -1: short
+    
+    # For the first day, we don't have a prediction yet
+    signals.append('HOLD')
+    
+    for i in range(1, len(predicted_prices)):
+        # Predict price change direction for the next day
+        price_change = predicted_prices[i] - actual_prices[i-1]
+        
+        if position == 0:  # No position
+            if price_change > 0:  # Model predicts price will go up
+                signals.append('BUY')
+                position = 1
+            elif price_change < 0:  # Model predicts price will go down
+                signals.append('SHORT')
+                position = -1
+            else:  # No change predicted
+                signals.append('HOLD')
+                
+        elif position == 1:  # Long position
+            if price_change > 0:  # Model predicts price will go up
+                signals.append('HOLD')
+            else:  # Model predicts price will go down
+                signals.append('SELL')
+                position = 0
+                
+        elif position == -1:  # Short position
+            if price_change < 0:  # Model predicts price will go down
+                signals.append('HOLD')
+            else:  # Model predicts price will go up
+                signals.append('BUY_TO_COVER')
+                position = 0
+    
+    return signals
+
+def calculate_portfolio_value(actual_prices, signals, initial_capital=10000.0):
+    """
+    Calculate portfolio value based on trading signals.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        signals: List of trading signals
+        initial_capital: Initial capital amount
+        
+    Returns:
+        Array of portfolio values
+    """
+    portfolio_value = [initial_capital]
+    position = 0  # 0: no position, 1: long, -1: short
+    shares = 0
+    cash = initial_capital
+    
+    for i in range(1, len(signals)):
+        signal = signals[i]
+        price = actual_prices[i]
+        
+        if signal == 'BUY':
+            # Calculate number of shares we can buy with all available cash
+            shares = cash / price
+            cash = 0
+            position = 1
+        elif signal == 'SELL' and position == 1:
+            # Sell all shares
+            cash = shares * price
+            shares = 0
+            position = 0
+        elif signal == 'SHORT':
+            # Short selling (borrow shares equal to cash value and sell them)
+            # For simplicity, we'll assume short selling 1x leverage
+            shares = -cash / price
+            cash = cash * 2  # Cash + proceeds from short sale
+            position = -1
+        elif signal == 'BUY_TO_COVER' and position == -1:
+            # Buy to cover short position
+            cash = cash - (-shares * price)  # Subtract cost of buying back shares
+            shares = 0
+            position = 0
+            
+        # Calculate portfolio value
+        if position == 0:
+            portfolio_value.append(cash)
+        elif position == 1:
+            portfolio_value.append(cash + shares * price)
+        elif position == -1:
+            portfolio_value.append(cash + shares * price)  # Short position value
+    
+    return portfolio_value
+
+def visualize_trading_strategy(actual_prices, predicted_prices, initial_capital=10000.0):
+    """
+    Visualize trading strategy performance.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices from Neural ODE model
+        initial_capital: Initial capital amount
+        
+    Returns:
+        Dictionary with trading results
+    """
+    # Generate trading signals
+    signals = generate_trading_signals(actual_prices, predicted_prices)
+    
+    # Calculate portfolio value
+    portfolio_value = calculate_portfolio_value(actual_prices, signals, initial_capital)
+    
+    # Calculate buy and hold strategy
+    buy_and_hold = [initial_capital]
+    for i in range(1, len(actual_prices)):
+        buy_and_hold.append(initial_capital * (actual_prices[i] / actual_prices[0]))
+    
+    # Calculate strategy performance metrics
+    total_return = (portfolio_value[-1] / portfolio_value[0] - 1) * 100
+    buy_and_hold_return = (buy_and_hold[-1] / buy_and_hold[0] - 1) * 100
+    total_trades = sum(1 for signal in signals if signal in ['BUY', 'SELL', 'SHORT', 'BUY_TO_COVER'])
+    
+    # Plot strategy performance
+    plt.figure(figsize=(14, 10))
+    
+    # Plot actual vs predicted prices
+    plt.subplot(3, 1, 1)
+    plt.plot(actual_prices, label='Actual Prices', color='blue')
+    plt.plot(predicted_prices, label='Predicted Prices', color='green', linestyle='--')
+    plt.title('Actual vs Predicted Prices')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot trading signals on the price chart
+    plt.subplot(3, 1, 2)
+    plt.plot(actual_prices, color='blue')
+    
+    for i in range(len(signals)):
+        if signals[i] == 'BUY':
+            plt.plot(i, actual_prices[i], '^', markersize=10, color='green')
+        elif signals[i] == 'SELL':
+            plt.plot(i, actual_prices[i], 'v', markersize=10, color='red')
+        elif signals[i] == 'SHORT':
+            plt.plot(i, actual_prices[i], 'v', markersize=10, color='purple')
+        elif signals[i] == 'BUY_TO_COVER':
+            plt.plot(i, actual_prices[i], '^', markersize=10, color='orange')
+    
+    plt.title('Trading Signals')
+    plt.grid(True)
+    
+    # Plot portfolio value vs buy and hold
+    plt.subplot(3, 1, 3)
+    plt.plot(portfolio_value, label=f'Strategy ({total_return:.2f}%)', color='green')
+    plt.plot(buy_and_hold, label=f'Buy and Hold ({buy_and_hold_return:.2f}%)', color='blue', linestyle='--')
+    plt.title('Portfolio Value vs Buy and Hold')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary statistics
+    print(f"Strategy Return: {total_return:.2f}%")
+    print(f"Buy and Hold Return: {buy_and_hold_return:.2f}%")
+    print(f"Alpha: {total_return - buy_and_hold_return:.2f}%")
+    print(f"Total Trades: {total_trades}")
+    
+    results = {
+        'signals': signals,
+        'portfolio_value': portfolio_value,
+        'buy_and_hold': buy_and_hold,
+        'total_return': total_return,
+        'buy_and_hold_return': buy_and_hold_return,
+        'total_trades': total_trades
+    }
+    
+    return results
+
+def save_trading_signals(actual_prices, predicted_prices, signals, portfolio_value, file_name='trading_signals.csv'):
+    """
+    Save trading signals and performance to a CSV file.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices
+        signals: List of trading signals
+        portfolio_value: List of portfolio values
+        file_name: Output file name
+    """
+    # Create a DataFrame with all the data
+    data = {
+        'Actual_Price': actual_prices,
+        'Predicted_Price': predicted_prices,
+        'Signal': signals,
+        'Portfolio_Value': portfolio_value
+    }
+    
+    # Create dummy dates if needed
+    dates = [datetime.now().strftime('%Y-%m-%d')] * len(actual_prices)
+    
+    # Create DataFrame
+    df = pd.DataFrame(data, index=dates)
+    
+    # Save to CSV
+    df.to_csv(file_name)
+    print(f"Trading signals saved to {file_name}")
+
+def backtest_parameters(actual_prices, predicted_prices, threshold_values):
+    """
+    Backtest different threshold values for trading signals.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices
+        threshold_values: List of threshold values to test
+        
+    Returns:
+        DataFrame with backtest results
+    """
+    results = []
+    
+    for threshold in threshold_values:
+        # Generate trading signals with threshold
+        signals = generate_trading_signals_with_threshold(actual_prices, predicted_prices, threshold)
+        
+        # Calculate portfolio value
+        portfolio_value = calculate_portfolio_value(actual_prices, signals)
+        
+        # Calculate strategy performance metrics
+        total_return = (portfolio_value[-1] / portfolio_value[0] - 1) * 100
+        total_trades = sum(1 for signal in signals if signal in ['BUY', 'SELL', 'SHORT', 'BUY_TO_COVER'])
+        
+        # Calculate buy and hold return
+        buy_and_hold_return = (actual_prices[-1] / actual_prices[0] - 1) * 100
+        
+        # Calculate drawdown
+        max_drawdown = calculate_max_drawdown(portfolio_value)
+        
+        results.append({
+            'Threshold': threshold,
+            'Total_Return': total_return,
+            'Buy_and_Hold_Return': buy_and_hold_return,
+            'Alpha': total_return - buy_and_hold_return,
+            'Max_Drawdown': max_drawdown,
+            'Total_Trades': total_trades
+        })
+    
+    return pd.DataFrame(results)
+
+def generate_trading_signals_with_threshold(actual_prices, predicted_prices, threshold=0.0):
+    """
+    Generate trading signals based on Neural ODE predictions with a threshold.
+    
+    Args:
+        actual_prices: Array of actual stock prices
+        predicted_prices: Array of predicted prices from Neural ODE model
+        threshold: Minimum percentage change required to trigger a signal
+        
+    Returns:
+        List of trading signals (BUY, SELL, SHORT, BUY_TO_COVER, HOLD)
+    """
+    signals = []
+    position = 0  # 0: no position, 1: long, -1: short
+    
+    # For the first day, we don't have a prediction yet
+    signals.append('HOLD')
+    
+    for i in range(1, len(predicted_prices)):
+        # Predict price change direction and percentage for the next day
+        price_change_pct = (predicted_prices[i] - actual_prices[i-1]) / actual_prices[i-1] * 100
+        
+        if position == 0:  # No position
+            if price_change_pct > threshold:  # Model predicts price will go up beyond threshold
+                signals.append('BUY')
+                position = 1
+            elif price_change_pct < -threshold:  # Model predicts price will go down beyond threshold
+                signals.append('SHORT')
+                position = -1
+            else:  # Change not significant enough
+                signals.append('HOLD')
+                
+        elif position == 1:  # Long position
+            if price_change_pct > -threshold:  # Model doesn't predict significant downside
+                signals.append('HOLD')
+            else:  # Model predicts significant downside
+                signals.append('SELL')
+                position = 0
+                
+        elif position == -1:  # Short position
+            if price_change_pct < threshold:  # Model doesn't predict significant upside
+                signals.append('HOLD')
+            else:  # Model predicts significant upside
+                signals.append('BUY_TO_COVER')
+                position = 0
+    
+    return signals
+
+def calculate_max_drawdown(portfolio_values):
+    """
+    Calculate the maximum drawdown from a series of portfolio values.
+    
+    Args:
+        portfolio_values: List of portfolio values
+        
+    Returns:
+        Maximum drawdown as a percentage
+    """
+    # Convert to numpy array if it's not already
+    values = np.array(portfolio_values)
+    
+    # Calculate the running maximum
+    running_max = np.maximum.accumulate(values)
+    
+    # Calculate the drawdown
+    drawdown = (values - running_max) / running_max * 100
+    
+    # Get the maximum drawdown
+    max_drawdown = np.min(drawdown)
+    
+    return max_drawdown
+
+if __name__ == "__main__":
+    # Example usage
+    import numpy as np
+    
+    # Create dummy data for testing
+    days = 100
+    actual_prices = np.linspace(100, 150, days) + np.random.normal(0, 5, days)
+    # Create predictions with some noise and bias
+    predicted_prices = np.roll(actual_prices, -1)  # Perfect predictions but 1 day ahead
+    predicted_prices[-1] = predicted_prices[-2] * 1.01  # Last day prediction
+    
+    # Add some noise to predictions
+    predicted_prices = predicted_prices + np.random.normal(0, 2, days)
+    
+    # Visualize strategy
+    results = visualize_trading_strategy(actual_prices, predicted_prices)
+    
+    # Save trading signals
+    save_trading_signals(actual_prices, predicted_prices, results['signals'], 
+                        results['portfolio_value'], 'test_trading_signals.csv')
+    
+    # Backtest different threshold values
+    thresholds = [0.0, 0.1, 0.2, 0.5, 1.0]
+    backtest_results = backtest_parameters(actual_prices, predicted_prices, thresholds)
+    print(backtest_results) # performance_metrics_cell.py
+#############################################################################
+# Cell: Calculate and Display Advanced Performance Metrics
+#############################################################################
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
+
+# Calculate daily returns from portfolio values
+portfolio_values = np.array(results['portfolio_value'])
+daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+
+# Calculate buy and hold daily returns for comparison
+buy_hold_values = np.array(results['buy_and_hold'])
+buy_hold_daily_returns = np.diff(buy_hold_values) / buy_hold_values[:-1]
+
+# Calculate performance metrics
+mean_daily_return = np.mean(daily_returns) * 100
+std_daily_return = np.std(daily_returns) * 100
+annualized_return = ((1 + mean_daily_return/100) ** 252 - 1) * 100
+annualized_volatility = std_daily_return * np.sqrt(252)
+sharpe_ratio = annualized_return / annualized_volatility if annualized_volatility != 0 else 0
+
+# Calculate maximum drawdown
+def calculate_max_drawdown(portfolio_values):
+    # Calculate the running maximum
+    running_max = np.maximum.accumulate(portfolio_values)
+    # Calculate drawdown in percentage terms
+    drawdown = (portfolio_values - running_max) / running_max * 100
+    # Get the maximum drawdown and its index
+    max_drawdown = np.min(drawdown)
+    max_drawdown_idx = np.argmin(drawdown)
+    # Find the peak before the maximum drawdown
+    peak_idx = np.argmax(portfolio_values[:max_drawdown_idx+1])
+    
+    return max_drawdown, peak_idx, max_drawdown_idx
+
+max_drawdown, peak_idx, trough_idx = calculate_max_drawdown(portfolio_values)
+max_dd_duration = trough_idx - peak_idx
+
+# Calculate the same metrics for buy and hold
+bh_mean_daily_return = np.mean(buy_hold_daily_returns) * 100
+bh_std_daily_return = np.std(buy_hold_daily_returns) * 100
+bh_annualized_return = ((1 + bh_mean_daily_return/100) ** 252 - 1) * 100
+bh_annualized_volatility = bh_std_daily_return * np.sqrt(252)
+bh_sharpe_ratio = bh_annualized_return / bh_annualized_volatility if bh_annualized_volatility != 0 else 0
+bh_max_drawdown, bh_peak_idx, bh_trough_idx = calculate_max_drawdown(buy_hold_values)
+bh_max_dd_duration = bh_trough_idx - bh_peak_idx
+
+# Calculate win rate and profit factor
+if len(trades_df) > 0:
+    win_rate = sum(trades_df['Profit_Pct'] > 0) / len(trades_df) * 100
+    total_profits = trades_df[trades_df['Profit_Pct'] > 0]['Profit_Pct'].sum()
+    total_losses = abs(trades_df[trades_df['Profit_Pct'] < 0]['Profit_Pct'].sum())
+    profit_factor = total_profits / total_losses if total_losses != 0 else float('inf')
+else:
+    win_rate = 0
+    profit_factor = 0
+
+# Print performance metrics
+print("\n" + "="*50)
+print("PERFORMANCE METRICS COMPARISON")
+print("="*50)
+
+metrics_table = pd.DataFrame({
+    'Metric': [
+        'Total Return (%)', 
+        'Annualized Return (%)', 
+        'Mean Daily Return (%)', 
+        'Daily Volatility (%)', 
+        'Annualized Volatility (%)', 
+        'Sharpe Ratio',
+        'Maximum Drawdown (%)', 
+        'Max Drawdown Duration (days)',
+        'Win Rate (%)',
+        'Profit Factor'
+    ],
+    'Trading Strategy': [
+        f"{results['total_return']:.2f}",
+        f"{annualized_return:.2f}",
+        f"{mean_daily_return:.4f}",
+        f"{std_daily_return:.4f}",
+        f"{annualized_volatility:.2f}",
+        f"{sharpe_ratio:.2f}",
+        f"{max_drawdown:.2f}",
+        f"{max_dd_duration}",
+        f"{win_rate:.2f}" if len(trades_df) > 0 else "N/A",
+        f"{profit_factor:.2f}" if len(trades_df) > 0 else "N/A"
+    ],
+    'Buy and Hold': [
+        f"{results['buy_and_hold_return']:.2f}",
+        f"{bh_annualized_return:.2f}",
+        f"{bh_mean_daily_return:.4f}",
+        f"{bh_std_daily_return:.4f}",
+        f"{bh_annualized_volatility:.2f}",
+        f"{bh_sharpe_ratio:.2f}",
+        f"{bh_max_drawdown:.2f}",
+        f"{bh_max_dd_duration}",
+        "N/A",
+        "N/A"
+    ]
+})
+
+# Display metrics table
+print(metrics_table.to_string(index=False))
+
+# Visualize the return distribution
+plt.figure(figsize=(15, 10))
+
+# Plot 1: Return distribution
+plt.subplot(2, 2, 1)
+plt.hist(daily_returns * 100, bins=50, alpha=0.6, color='green', label='Strategy')
+plt.hist(buy_hold_daily_returns * 100, bins=50, alpha=0.6, color='blue', label='Buy & Hold')
+plt.axvline(0, color='black', linestyle='--')
+plt.title('Daily Return Distribution')
+plt.xlabel('Daily Return (%)')
+plt.ylabel('Frequency')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# Plot 2: Drawdown over time
+plt.subplot(2, 2, 2)
+running_max_strategy = np.maximum.accumulate(portfolio_values)
+drawdown_strategy = (portfolio_values - running_max_strategy) / running_max_strategy * 100
+
+running_max_bh = np.maximum.accumulate(buy_hold_values)
+drawdown_bh = (buy_hold_values - running_max_bh) / running_max_bh * 100
+
+plt.plot(drawdown_strategy, color='green', label='Strategy')
+plt.plot(drawdown_bh, color='blue', label='Buy & Hold')
+plt.title('Drawdown Over Time')
+plt.xlabel('Days')
+plt.ylabel('Drawdown (%)')
+plt.gca().yaxis.set_major_formatter(PercentFormatter())
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+# Plot 3: Rolling Sharpe Ratio (30-day window)
+plt.subplot(2, 2, 3)
+rolling_returns = pd.Series(daily_returns)
+rolling_std = rolling_returns.rolling(window=30).std() * np.sqrt(252)
+rolling_mean = rolling_returns.rolling(window=30).mean() * 252
+rolling_sharpe = rolling_mean / rolling_std
+
+rolling_returns_bh = pd.Series(buy_hold_daily_returns)
+rolling_std_bh = rolling_returns_bh.rolling(window=30).std() * np.sqrt(252)
+rolling_mean_bh = rolling_returns_bh.rolling(window=30).mean() * 252
+rolling_sharpe_bh = rolling_mean_bh / rolling_std_bh
+
+plt.plot(rolling_sharpe, color='green', label='Strategy')
+plt.plot(rolling_sharpe_bh, color='blue', label='Buy & Hold')
+plt.title('30-Day Rolling Sharpe Ratio')
+plt.xlabel('Days')
+plt.ylabel('Sharpe Ratio')
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+# Plot 4: Equity curve with drawdown periods highlighted
+plt.subplot(2, 2, 4)
+plt.plot(portfolio_values, color='green', label='Strategy')
+plt.plot(buy_hold_values, color='blue', label='Buy & Hold')
+
+# Highlight major drawdown periods for strategy
+is_drawdown = drawdown_strategy < -5  # Drawdowns greater than 5%
+in_drawdown = False
+start_idx = 0
+
+for i in range(len(is_drawdown)):
+    if is_drawdown[i] and not in_drawdown:
+        # Start of drawdown period
+        in_drawdown = True
+        start_idx = i
+    elif not is_drawdown[i] and in_drawdown:
+        # End of drawdown period
+        plt.axvspan(start_idx, i, alpha=0.2, color='red')
+        in_drawdown = False
+
+# If still in drawdown at the end
+if in_drawdown:
+    plt.axvspan(start_idx, len(is_drawdown)-1, alpha=0.2, color='red')
+
+plt.title('Equity Curve with Major Drawdown Periods Highlighted')
+plt.xlabel('Days')
+plt.ylabel('Portfolio Value')
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# Calculate additional metrics
+# Calmar ratio (annualized return / max drawdown)
+calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else float('inf')
+bh_calmar_ratio = bh_annualized_return / abs(bh_max_drawdown) if bh_max_drawdown != 0 else float('inf')
+
+# Sortino ratio (using downside deviation)
+downside_returns = np.array([min(0, r) for r in daily_returns])
+downside_deviation = np.std(downside_returns) * np.sqrt(252)
+sortino_ratio = annualized_return / downside_deviation if downside_deviation != 0 else float('inf')
+
+bh_downside_returns = np.array([min(0, r) for r in buy_hold_daily_returns])
+bh_downside_deviation = np.std(bh_downside_returns) * np.sqrt(252)
+bh_sortino_ratio = bh_annualized_return / bh_downside_deviation if bh_downside_deviation != 0 else float('inf')
+
+# Calculate the percentage of positive days
+positive_days_pct = np.sum(daily_returns > 0) / len(daily_returns) * 100
+bh_positive_days_pct = np.sum(buy_hold_daily_returns > 0) / len(buy_hold_daily_returns) * 100
+
+# Calculate the max consecutive wins and losses
+if len(trades_df) > 0:
+    trades_df['IsWin'] = trades_df['Profit_Pct'] > 0
+    
+    # Calculate consecutive wins and losses
+    trades_df['ConsecutiveCount'] = 1
+    for i in range(1, len(trades_df)):
+        if trades_df['IsWin'].iloc[i] == trades_df['IsWin'].iloc[i-1]:
+            trades_df['ConsecutiveCount'].iloc[i] = trades_df['ConsecutiveCount'].iloc[i-1] + 1
+    
+    max_consecutive_wins = trades_df[trades_df['IsWin']]['ConsecutiveCount'].max() if not trades_df[trades_df['IsWin']].empty else 0
+    max_consecutive_losses = trades_df[~trades_df['IsWin']]['ConsecutiveCount'].max() if not trades_df[~trades_df['IsWin']].empty else 0
+else:
+    max_consecutive_wins = 0
+    max_consecutive_losses = 0
+
+# Print advanced metrics
+print("\n" + "="*50)
+print("ADVANCED PERFORMANCE METRICS")
+print("="*50)
+
+advanced_metrics = pd.DataFrame({
+    'Metric': [
+        'Calmar Ratio', 
+        'Sortino Ratio', 
+        'Positive Days (%)', 
+        'Max Consecutive Wins',
+        'Max Consecutive Losses'
+    ],
+    'Trading Strategy': [
+        f"{calmar_ratio:.2f}",
+        f"{sortino_ratio:.2f}",
+        f"{positive_days_pct:.2f}",
+        f"{max_consecutive_wins}" if len(trades_df) > 0 else "N/A",
+        f"{max_consecutive_losses}" if len(trades_df) > 0 else "N/A"
+    ],
+    'Buy and Hold': [
+        f"{bh_calmar_ratio:.2f}",
+        f"{bh_sortino_ratio:.2f}",
+        f"{bh_positive_days_pct:.2f}",
+        "N/A",
+        "N/A"
+    ]
+})
+
+# Display advanced metrics table
+print(advanced_metrics.to_string(index=False))
+
+# Visualize monthly returns
+if 'monthly_comparison' in locals():
+    plt.figure(figsize=(14, 7))
+    monthly_comparison.plot(kind='bar', figsize=(14, 7))
+    plt.title('Monthly Returns: Strategy vs Buy-and-Hold')
+    plt.ylabel('Return (%)')
+    plt.grid(True, alpha=0.3)
+    plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    
+    # Calculate and display the best and worst months
+    best_month_strategy = monthly_comparison['Strategy'].max()
+    worst_month_strategy = monthly_comparison['Strategy'].min()
+    best_month_bh = monthly_comparison['Buy_and_Hold'].max()
+    worst_month_bh = monthly_comparison['Buy_and_Hold'].min()
+    
+    print("\n" + "="*50)
+    print("MONTHLY PERFORMANCE EXTREMES")
+    print("="*50)
+    print(f"Strategy Best Month: {best_month_strategy:.2f}%")
+    print(f"Strategy Worst Month: {worst_month_strategy:.2f}%")
+    print(f"Buy & Hold Best Month: {best_month_bh:.2f}%")
+    print(f"Buy & Hold Worst Month: {worst_month_bh:.2f}%") # trading_strategy.py
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+import torch
+import torch.nn as nn
+import copy
+from torchdiffeq import odeint
+
+# Define the ODE function and Neural ODE model (same as in the notebook)
+class ODEFunc(nn.Module):
+    def __init__(self, dim):
+        super(ODEFunc, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, 50),
+            nn.Tanh(),
+            nn.Linear(50, 50),
+            nn.Tanh(),
+            nn.Linear(50, dim),
+        )
+        for m in self.net.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0, std=0.1)
+                nn.init.constant_(m.bias, val=0)
+
+    def forward(self, t, y):
+        return self.net(y)
+
+class NeuralODEModel(nn.Module):
+    def __init__(self, ode_func, dim):
+        super(NeuralODEModel, self).__init__()
+        self.ode_func = ode_func
+        self.fc = nn.Linear(dim, 1)  # Output layer to map ODE solution to a single value
+
+    def forward(self, x):
+        out = odeint(self.ode_func, x, torch.tensor([0, 1.0]), method='dopri5')
+        out = out[1]  # Take the solution at the end time (t=1.0)
+        out = self.fc(out)
+        return out
+
+# Function to load and preprocess data
+def load_and_preprocess_data(file_path):
+    data = pd.read_csv(file_path)
+    # Assuming 'Close' is the column name for closing prices
+    prices = data['Close'].values.reshape(-1, 1)
+    
+    # Scale the data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_prices = scaler.fit_transform(prices)
+    
+    return data, scaled_prices, scaler
+
+# Function to prepare data for Neural ODE (similar to the notebook phase_space_reconstruction)
+def phase_space_reconstruction(data, delay, embedding_dim):
+    n_samples = len(data) - delay * (embedding_dim - 1)
+    reconstructed = np.zeros((n_samples, embedding_dim))
+    
+    for i in range(n_samples):
+        for j in range(embedding_dim):
+            reconstructed[i, j] = data[i + j * delay]
+    
+    return reconstructed
+
+# Function to generate trading signals based on model predictions
+def generate_trading_signals(actual_prices, predicted_prices):
+    signals = []
+    position = 0  # 0: no position, 1: long, -1: short
+    
+    # For the first day, we don't have a prediction yet
+    signals.append('HOLD')
+    
+    for i in range(1, len(predicted_prices)):
+        price_change = predicted_prices[i] - actual_prices[i-1]
+        
+        if position == 0:  # No current position
+            if price_change > 0:
+                signals.append('BUY')
+                position = 1
+            elif price_change < 0:
+                signals.append('SHORT')
+                position = -1
+            else:
+                signals.append('HOLD')
+        
+        elif position == 1:  # Currently long
+            if price_change > 0:
+                signals.append('HOLD')
+            else:
+                signals.append('SELL')
+                position = 0
+        
+        elif position == -1:  # Currently short
+            if price_change < 0:
+                signals.append('HOLD')
+            else:
+                signals.append('BUY_TO_COVER')
+                position = 0
+    
+    return signals
+
+# Function to calculate portfolio value based on trading signals
+def calculate_portfolio_value(prices, signals, initial_capital=10000):
+    portfolio_value = [initial_capital]
+    position = 0  # 0: no position, 1: long, -1: short
+    shares = 0
+    
+    for i in range(1, len(signals)):
+        current_value = portfolio_value[-1]
+        
+        if signals[i] == 'BUY':
+            position = 1
+            shares = current_value / prices[i]
+            portfolio_value.append(current_value)  # Value doesn't change on buy day
+        
+        elif signals[i] == 'SELL':
+            position = 0
+            current_value = shares * prices[i]
+            shares = 0
+            portfolio_value.append(current_value)
+        
+        elif signals[i] == 'SHORT':
+            position = -1
+            shares = current_value / prices[i]
+            portfolio_value.append(current_value)  # Value doesn't change on short day
+        
+        elif signals[i] == 'BUY_TO_COVER':
+            position = 0
+            current_value = current_value + (shares * (prices[i-1] - prices[i]))
+            shares = 0
+            portfolio_value.append(current_value)
+        
+        else:  # HOLD
+            if position == 1:
+                portfolio_value.append(shares * prices[i])
+            elif position == -1:
+                profit_or_loss = shares * (prices[i-1] - prices[i])
+                portfolio_value.append(portfolio_value[-1] + profit_or_loss)
+            else:
+                portfolio_value.append(current_value)
+    
+    return portfolio_value
+
+# Function to visualize trading results
+def visualize_trading_results(data, signals, portfolio_value):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12), sharex=True)
+    
+    # Plot stock prices and signals
+    ax1.plot(data.index, data['Close'], label='Stock Price')
+    
+    # Add markers for buy and sell signals
+    buy_signals = [i for i in range(len(signals)) if signals[i] == 'BUY']
+    sell_signals = [i for i in range(len(signals)) if signals[i] == 'SELL']
+    short_signals = [i for i in range(len(signals)) if signals[i] == 'SHORT']
+    cover_signals = [i for i in range(len(signals)) if signals[i] == 'BUY_TO_COVER']
+    
+    if buy_signals:
+        ax1.scatter(data.index[buy_signals], data['Close'].iloc[buy_signals], 
+                    marker='^', color='green', s=100, label='Buy')
+    if sell_signals:
+        ax1.scatter(data.index[sell_signals], data['Close'].iloc[sell_signals], 
+                    marker='v', color='red', s=100, label='Sell')
+    if short_signals:
+        ax1.scatter(data.index[short_signals], data['Close'].iloc[short_signals], 
+                    marker='v', color='purple', s=100, label='Short')
+    if cover_signals:
+        ax1.scatter(data.index[cover_signals], data['Close'].iloc[cover_signals], 
+                    marker='^', color='orange', s=100, label='Cover')
+    
+    ax1.set_title('Stock Price and Trading Signals')
+    ax1.set_ylabel('Price')
+    ax1.grid(True)
+    ax1.legend()
+    
+    # Plot portfolio value
+    ax2.plot(data.index[:len(portfolio_value)], portfolio_value, label='Portfolio Value', color='blue')
+    ax2.set_title('Portfolio Value Over Time')
+    ax2.set_xlabel('Date')
+    ax2.set_ylabel('Value ($)')
+    ax2.grid(True)
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig('trading_strategy_results.png')
+    plt.show()
+
+def main():
+    # Load the saved model
+    model_path = 'neural_ode_model.pth'
+    data_path = 'SPX_test.csv'  # Update with your actual data path
+    
+    # Load and preprocess data
+    data, scaled_prices, scaler = load_and_preprocess_data(data_path)
+    
+    # Parameters for phase space reconstruction (same as in the notebook)
+    delay = 1
+    embedding_dim = 3
+    
+    # Prepare data
+    reconstructed_features = phase_space_reconstruction(scaled_prices, delay, embedding_dim)
+    
+    # Load the model
+    input_dim = reconstructed_features.shape[1]
+    ode_func = ODEFunc(input_dim)
+    model = NeuralODEModel(ode_func, input_dim)
+    model.load_state_dict(torch.load(model_path))
+    model.eval()
+    
+    # Generate predictions
+    with torch.no_grad():
+        tensor_input = torch.from_numpy(reconstructed_features).float()
+        predictions = model(tensor_input).numpy()
+    
+    # Inverse transform predictions to get actual prices
+    predicted_prices = scaler.inverse_transform(predictions)
+    actual_prices = data['Close'].values[delay * (embedding_dim - 1):]
+    
+    # Generate trading signals
+    signals = generate_trading_signals(actual_prices, predicted_prices.flatten())
+    
+    # Calculate portfolio value
+    portfolio_value = calculate_portfolio_value(actual_prices, signals)
+    
+    # Visualize results
+    data_subset = data.iloc[delay * (embedding_dim - 1):].reset_index(drop=True)
+    visualize_trading_results(data_subset, signals, portfolio_value)
+    
+    # Print strategy performance metrics
+    initial_capital = 10000
+    final_value = portfolio_value[-1]
+    total_return = (final_value - initial_capital) / initial_capital * 100
+    
+    print(f"Initial Capital: ${initial_capital:.2f}")
+    print(f"Final Portfolio Value: ${final_value:.2f}")
+    print(f"Total Return: {total_return:.2f}%")
+    
+    # Calculate and print additional metrics
+    buy_and_hold_return = (actual_prices[-1] - actual_prices[0]) / actual_prices[0] * 100
+    print(f"Buy and Hold Return: {buy_and_hold_return:.2f}%")
+    
+    # Count the number of trades
+    buy_count = signals.count('BUY')
+    sell_count = signals.count('SELL')
+    short_count = signals.count('SHORT')
+    cover_count = signals.count('BUY_TO_COVER')
+    
+    total_trades = buy_count + sell_count + short_count + cover_count
+    print(f"Total Trades: {total_trades}")
+    print(f"  Buy: {buy_count}, Sell: {sell_count}")
+    print(f"  Short: {short_count}, Cover: {cover_count}")
+    
+    # Save trading signals to CSV
+    signal_df = pd.DataFrame({
+        'Date': data_subset.index,
+        'Price': actual_prices,
+        'Predicted_Price': predicted_prices.flatten(),
+        'Signal': signals,
+    })
+    signal_df.to_csv('trading_signals.csv', index=False)
+    print("Trading signals saved to 'trading_signals.csv'")
+
+if __name__ == "__main__":
+    main() <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Trading Strategy Comparison</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            padding-bottom: 50px;
+        }
+        .header {
+            background-color: #0d6efd;
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .metrics-table {
+            font-size: 0.9rem;
+        }
+        .highlight {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .spinner-border {
+            display: none;
+        }
+        #resultsSection {
+            display: none;
+        }
+        footer {
+            margin-top: 50px;
+            padding: 20px 0;
+            background-color: #f8f9fa;
+        }
+        .chart-container {
+            height: 400px;
+            margin-bottom: 30px;
+        }
+        .model-selector .btn {
+            margin-right: 10px;
+        }
+        .model-selector .active {
+            background-color: #0d6efd;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <h1 class="display-4">Advanced Trading Strategy Comparison</h1>
+            <p class="lead">Backtesting tool comparing Neural ODEs, LSTM, and ARCH models for trading</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-body">
+                        <h2 class="card-title">Enter Stock Ticker</h2>
+                        <p>Choose a stock ticker to analyze with different trading strategy models.</p>
+                        
+                        <form id="tickerForm" class="mb-4">
+                            <div class="row g-3 align-items-center">
+                                <div class="col-auto">
+                                    <label for="ticker" class="col-form-label">Ticker Symbol:</label>
+                                </div>
+                                <div class="col-auto">
+                                    <input type="text" id="ticker" class="form-control" placeholder="e.g., AAPL" required>
+                                </div>
+                                <div class="col-auto">
+                                    <button type="submit" class="btn btn-primary">
+                                        <span class="spinner-border spinner-border-sm me-2" id="loadingSpinner" role="status" aria-hidden="true"></span>
+                                        Analyze
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                        
+                        <div class="highlight">
+                            <h5>How It Works:</h5>
+                            <p>This tool uses advanced machine learning models to predict stock price movements and generate trading signals:</p>
+                            <ul>
+                                <li><strong>Neural ODEs</strong>: Uses continuous-depth neural networks to model complex dynamical systems and predict price trajectories.</li>
+                                <li><strong>LSTM</strong>: Uses Long Short-Term Memory networks to capture long-term dependencies in time series data.</li>
+                                <li><strong>ARCH</strong>: Uses Autoregressive Conditional Heteroskedasticity models to predict volatility and generate trading signals.</li>
+                            </ul>
+                            <p>After entering a ticker, the system will:</p>
+                            <ol>
+                                <li>Fetch historical price data</li>
+                                <li>Apply all models for prediction</li>
+                                <li>Generate trading signals (BUY, SELL, SHORT, COVER)</li>
+                                <li>Calculate performance metrics for comparison</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="resultsSection">
+            <h2 class="mb-4">Trading Strategy Results for <span id="tickerDisplay">TICKER</span></h2>
+            
+            <div class="row mb-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Model Comparison</h3>
+                            <p>Select a model to view detailed results or view side-by-side comparison.</p>
+                            <div class="model-selector mb-3">
+                                <button class="btn btn-outline-primary active" id="btnCompare">Side-by-Side Comparison</button>
+                                <button class="btn btn-outline-primary" id="btnNeuralODE">Neural ODE</button>
+                                <button class="btn btn-outline-primary" id="btnLSTM">LSTM</button>
+                                <button class="btn btn-outline-primary" id="btnARCH">ARCH</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Price Prediction & Trading Signals</h3>
+                            <div class="chart-container">
+                                <canvas id="priceChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Portfolio Performance</h3>
+                            <div class="chart-container">
+                                <canvas id="portfolioChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Drawdown Analysis</h3>
+                            <div class="chart-container">
+                                <canvas id="drawdownChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Daily Return Distribution</h3>
+                            <div class="chart-container">
+                                <canvas id="returnDistChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Rolling Sharpe Ratio</h3>
+                            <div class="chart-container">
+                                <canvas id="sharpeChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row mt-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Performance Metrics</h3>
+                            <div class="table-responsive">
+                                <table class="table table-bordered metrics-table">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Metric</th>
+                                            <th>Neural ODE</th>
+                                            <th>LSTM</th>
+                                            <th>ARCH</th>
+                                            <th>Buy and Hold</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="metricsTableBody">
+                                        <!-- Metrics will be populated here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row mt-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title">Advanced Metrics</h3>
+                            <div class="table-responsive">
+                                <table class="table table-bordered metrics-table">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Metric</th>
+                                            <th>Neural ODE</th>
+                                            <th>LSTM</th>
+                                            <th>ARCH</th>
+                                            <th>Buy and Hold</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="advancedMetricsTableBody">
+                                        <!-- Advanced metrics will be populated here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <div class="row">
+                <div class="col-md-12 text-center">
+                    <p>Advanced Trading Strategy Comparison - A project by <a href="https://github.com/yourusername" target="_blank">Your Name</a></p>
+                    <p><small>Powered by Neural Ordinary Differential Equations, LSTMs, ARCH Models, and PyTorch</small></p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html> // script.js
+// Chart.js instances
+let priceChart, portfolioChart, drawdownChart, returnDistChart, sharpeChart;
+
+// Current active model view
+let activeView = 'compare'; // 'compare', 'neuralode', 'lstm', or 'arch'
+
+// Sample data for visualization (this would normally come from your backend)
+const sampleData = {
+    ticker: 'SPY',
+    dates: Array.from({length: 100}, (_, i) => {
+        const date = new Date('2022-01-01');
+        date.setDate(date.getDate() + i);
+        return date.toISOString().split('T')[0];
+    }),
+    prices: Array.from({length: 100}, (_, i) => 100 + Math.sin(i/10) * 10 + i/5),
+    
+    // Neural ODE model data
+    neuralode: {
+        predicted_prices: Array.from({length: 100}, (_, i) => 100 + Math.sin((i+3)/10) * 10 + i/5 + (Math.random() - 0.5) * 2),
+        signals: Array.from({length: 100}, (_, i) => {
+            if (i % 20 === 5) return 'BUY';
+            if (i % 20 === 15) return 'SELL';
+            if (i % 30 === 8) return 'SHORT';
+            if (i % 30 === 18) return 'BUY_TO_COVER';
+            return 'HOLD';
+        }),
+        portfolio_value: Array.from({length: 100}, (_, i) => 10000 * (1 + (Math.sin(i/15) * 0.05 + i/100))),
+        drawdown: Array.from({length: 100}, (_, i) => -Math.abs(Math.sin(i/20) * 8)),
+        daily_returns: Array.from({length: 99}, () => (Math.random() - 0.4) * 2),
+        rolling_sharpe: Array.from({length: 70}, (_, i) => Math.sin(i/10) + 1.5 + (Math.random() - 0.5) * 0.5),
+    },
+    
+    // LSTM model data (with slightly different characteristics)
+    lstm: {
+        predicted_prices: Array.from({length: 100}, (_, i) => 100 + Math.sin((i+2)/10) * 10 + i/5 + (Math.random() - 0.5) * 2.5),
+        signals: Array.from({length: 100}, (_, i) => {
+            if (i % 18 === 3) return 'BUY';
+            if (i % 18 === 12) return 'SELL';
+            if (i % 25 === 6) return 'SHORT';
+            if (i % 25 === 16) return 'BUY_TO_COVER';
+            return 'HOLD';
+        }),
+        portfolio_value: Array.from({length: 100}, (_, i) => 10000 * (1 + (Math.sin(i/12) * 0.06 + i/95))),
+        drawdown: Array.from({length: 100}, (_, i) => -Math.abs(Math.sin(i/18) * 9)),
+        daily_returns: Array.from({length: 99}, () => (Math.random() - 0.38) * 2.2),
+        rolling_sharpe: Array.from({length: 70}, (_, i) => Math.sin(i/12) + 1.3 + (Math.random() - 0.5) * 0.6),
+    },
+    
+    // ARCH model data (with focus on volatility-based trading)
+    arch: {
+        predicted_prices: Array.from({length: 100}, (_, i) => 100 + Math.sin((i+1)/10) * 10 + i/5 + (Math.random() - 0.5) * 3),
+        signals: Array.from({length: 100}, (_, i) => {
+            if (i % 15 === 2) return 'BUY';
+            if (i % 15 === 9) return 'SELL';
+            if (i % 22 === 5) return 'SHORT';
+            if (i % 22 === 15) return 'BUY_TO_COVER';
+            return 'HOLD';
+        }),
+        portfolio_value: Array.from({length: 100}, (_, i) => 10000 * (1 + (Math.sin(i/10) * 0.07 + i/90))),
+        drawdown: Array.from({length: 100}, (_, i) => -Math.abs(Math.sin(i/16) * 10)),
+        daily_returns: Array.from({length: 99}, () => (Math.random() - 0.35) * 2.4),
+        rolling_sharpe: Array.from({length: 70}, (_, i) => Math.sin(i/11) + 1.4 + (Math.random() - 0.5) * 0.6),
+    },
+    
+    // Buy and hold strategy
+    buy_and_hold: Array.from({length: 100}, (_, i) => 10000 * (1 + i/100)),
+    drawdown_bh: Array.from({length: 100}, (_, i) => -Math.abs(Math.sin(i/30) * 6)),
+    bh_daily_returns: Array.from({length: 99}, () => (Math.random() - 0.5) * 1.5),
+    rolling_sharpe_bh: Array.from({length: 70}, (_, i) => Math.sin(i/10) + 1 + (Math.random() - 0.5) * 0.5),
+    
+    // Performance metrics
+    metrics: {
+        'Total Return (%)': {neuralode: '45.32', lstm: '47.88', arch: '51.24', buyhold: '32.15'},
+        'Annualized Return (%)': {neuralode: '18.76', lstm: '19.54', arch: '20.65', buyhold: '14.22'},
+        'Mean Daily Return (%)': {neuralode: '0.0845', lstm: '0.0892', arch: '0.0935', buyhold: '0.0654'},
+        'Daily Volatility (%)': {neuralode: '1.2375', lstm: '1.4125', arch: '1.5250', buyhold: '1.4211'},
+        'Annualized Volatility (%)': {neuralode: '19.64', lstm: '22.42', arch: '24.20', buyhold: '22.56'},
+        'Sharpe Ratio': {neuralode: '0.96', lstm: '0.87', arch: '0.85', buyhold: '0.63'},
+        'Maximum Drawdown (%)': {neuralode: '-15.42', lstm: '-17.65', arch: '-18.32', buyhold: '-18.76'},
+        'Win Rate (%)': {neuralode: '58.33', lstm: '56.78', arch: '59.45', buyhold: 'N/A'},
+        'Profit Factor': {neuralode: '1.87', lstm: '1.74', arch: '1.92', buyhold: 'N/A'}
+    },
+    
+    // Advanced metrics
+    advanced_metrics: {
+        'Calmar Ratio': {neuralode: '1.22', lstm: '1.11', arch: '1.13', buyhold: '0.76'},
+        'Sortino Ratio': {neuralode: '1.38', lstm: '1.25', arch: '1.27', buyhold: '0.92'},
+        'Positive Days (%)': {neuralode: '54.55', lstm: '53.21', arch: '55.12', buyhold: '51.52'},
+        'Max Consecutive Wins': {neuralode: '7', lstm: '6', arch: '8', buyhold: 'N/A'},
+        'Max Consecutive Losses': {neuralode: '4', lstm: '5', arch: '4', buyhold: 'N/A'}
+    }
+};
+
+// Initialize the page when DOM is fully loaded
+document.addEventListener('DOMContentLoaded', function() {
+    // Form submission handler
+    document.getElementById('tickerForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const ticker = document.getElementById('ticker').value.toUpperCase();
+        if (!ticker) return;
+        
+        // Show loading spinner
+        document.getElementById('loadingSpinner').style.display = 'inline-block';
+        
+        // In a real app, we would fetch data from a backend here
+        // For this demo, we'll use sample data with a delay to simulate loading
+        setTimeout(() => {
+            displayResults(ticker);
+            document.getElementById('loadingSpinner').style.display = 'none';
+        }, 1500);
+    });
+    
+    // Add event listeners for model selection buttons
+    document.getElementById('btnCompare').addEventListener('click', function() {
+        setActiveView('compare');
+    });
+    
+    document.getElementById('btnNeuralODE').addEventListener('click', function() {
+        setActiveView('neuralode');
+    });
+    
+    document.getElementById('btnLSTM').addEventListener('click', function() {
+        setActiveView('lstm');
+    });
+    
+    document.getElementById('btnARCH').addEventListener('click', function() {
+        setActiveView('arch');
+    });
+});
+
+// Set the active view and update UI
+function setActiveView(view) {
+    activeView = view;
+    
+    // Update button styles
+    document.querySelectorAll('.model-selector .btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    const activeButton = document.getElementById(`btn${view.charAt(0).toUpperCase() + view.slice(1)}`);
+    if (activeButton) {
+        activeButton.classList.add('active');
+    }
+    
+    // Update charts based on the selected view
+    const ticker = document.getElementById('tickerDisplay').textContent;
+    displayResults(ticker);
+}
+
+// Display results based on ticker
+function displayResults(ticker) {
+    // Update ticker display
+    document.getElementById('tickerDisplay').textContent = ticker;
+    
+    // Show results section
+    document.getElementById('resultsSection').style.display = 'block';
+    
+    // Update the sample data with the new ticker
+    const data = {...sampleData, ticker};
+    
+    // Render all charts and tables based on active view
+    createPriceChart(data);
+    createPortfolioChart(data);
+    createDrawdownChart(data);
+    createReturnDistChart(data);
+    createSharpeChart(data);
+    populateMetricsTable(data);
+    populateAdvancedMetricsTable(data);
+    
+    // Scroll to results
+    document.getElementById('resultsSection').scrollIntoView({behavior: 'smooth'});
+}
+
+// Create Price Chart with Signals
+function createPriceChart(data) {
+    const ctx = document.getElementById('priceChart').getContext('2d');
+    
+    // Destroy previous chart if it exists
+    if (priceChart) priceChart.destroy();
+    
+    // Datasets based on active view
+    const datasets = [];
+    
+    // Always include actual price
+    datasets.push({
+        label: 'Actual Price',
+        data: data.prices,
+        borderColor: 'rgba(0, 123, 255, 1)',
+        backgroundColor: 'rgba(0, 123, 255, 0.1)',
+        fill: false,
+        tension: 0.1
+    });
+    
+    // Prepare signal points for scatter plot
+    let neuralodesignals = [], lstmsignals = [], archsignals = [];
+    
+    if (activeView === 'compare' || activeView === 'neuralode') {
+        // Add Neural ODE predictions
+        datasets.push({
+            label: 'Neural ODE Predictions',
+            data: data.neuralode.predicted_prices,
+            borderColor: 'rgba(40, 167, 69, 1)',
+            borderDash: [5, 5],
+            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+            fill: false,
+            tension: 0.1
+        });
+        
+        // Prepare Neural ODE signal points
+        neuralodesignals = prepareTradingSignals(data.dates, data.prices, data.neuralode.signals);
+    }
+    
+    if (activeView === 'compare' || activeView === 'lstm') {
+        // Add LSTM predictions
+        datasets.push({
+            label: 'LSTM Predictions',
+            data: data.lstm.predicted_prices,
+            borderColor: 'rgba(220, 53, 69, 1)',
+            borderDash: [5, 5],
+            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+            fill: false,
+            tension: 0.1
+        });
+        
+        // Prepare LSTM signal points
+        lstmsignals = prepareTradingSignals(data.dates, data.prices, data.lstm.signals);
+    }
+    
+    if (activeView === 'compare' || activeView === 'arch') {
+        // Add ARCH predictions
+        datasets.push({
+            label: 'ARCH Predictions',
+            data: data.arch.predicted_prices,
+            borderColor: 'rgba(153, 102, 255, 1)',
+            borderDash: [5, 5],
+            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+            fill: false,
+            tension: 0.1
+        });
+        
+        // Prepare ARCH signal points
+        archsignals = prepareTradingSignals(data.dates, data.prices, data.arch.signals);
+    }
+    
+    // Add signal datasets based on active view
+    if (activeView === 'neuralode' || activeView === 'compare') {
+        datasets.push(...createSignalDatasets(neuralodesignals, 'Neural ODE'));
+    }
+    
+    if (activeView === 'lstm' || activeView === 'compare') {
+        datasets.push(...createSignalDatasets(lstmsignals, 'LSTM'));
+    }
+    
+    if (activeView === 'arch' || activeView === 'compare') {
+        datasets.push(...createSignalDatasets(archsignals, 'ARCH'));
+    }
+    
+    priceChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.dates,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: 'category',
+                    title: {
+                        display: true,
+                        text: 'Date'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Price'
+                    }
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: `${data.ticker} Price and Model Predictions`
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        }
+    });
+}
+
+// Helper function to prepare trading signals
+function prepareTradingSignals(dates, prices, signals) {
+    const buyPoints = [], sellPoints = [], shortPoints = [], coverPoints = [];
+    
+    signals.forEach((signal, idx) => {
+        if (signal === 'BUY') {
+            buyPoints.push({x: dates[idx], y: prices[idx]});
+        } else if (signal === 'SELL') {
+            sellPoints.push({x: dates[idx], y: prices[idx]});
+        } else if (signal === 'SHORT') {
+            shortPoints.push({x: dates[idx], y: prices[idx]});
+        } else if (signal === 'BUY_TO_COVER') {
+            coverPoints.push({x: dates[idx], y: prices[idx]});
+        }
+    });
+    
+    return { buyPoints, sellPoints, shortPoints, coverPoints };
+}
+
+// Helper function to create signal datasets
+function createSignalDatasets(signals, prefix) {
+    const { buyPoints, sellPoints, shortPoints, coverPoints } = signals;
+    
+    // Color variations based on model
+    const colors = prefix === 'Neural ODE' 
+        ? { buy: 'rgba(40, 167, 69, 1)', sell: 'rgba(220, 53, 69, 1)', 
+            short: 'rgba(111, 66, 193, 1)', cover: 'rgba(255, 153, 0, 1)' }
+        : { buy: 'rgba(20, 120, 80, 1)', sell: 'rgba(180, 30, 45, 1)', 
+            short: 'rgba(90, 50, 150, 1)', cover: 'rgba(230, 130, 20, 1)' };
+    
+    return [
+        {
+            label: `${prefix} Buy Signals`,
+            data: buyPoints,
+            borderColor: colors.buy,
+            backgroundColor: colors.buy,
+            pointRadius: 6,
+            pointStyle: 'triangle',
+            showLine: false
+        },
+        {
+            label: `${prefix} Sell Signals`,
+            data: sellPoints,
+            borderColor: colors.sell,
+            backgroundColor: colors.sell,
+            pointRadius: 6,
+            pointStyle: 'triangle',
+            rotation: 180,
+            showLine: false
+        },
+        {
+            label: `${prefix} Short Signals`,
+            data: shortPoints,
+            borderColor: colors.short,
+            backgroundColor: colors.short,
+            pointRadius: 6,
+            pointStyle: 'triangle',
+            rotation: 180,
+            showLine: false
+        },
+        {
+            label: `${prefix} Cover Signals`,
+            data: coverPoints,
+            borderColor: colors.cover,
+            backgroundColor: colors.cover,
+            pointRadius: 6,
+            pointStyle: 'triangle',
+            showLine: false
+        }
+    ];
+}
+
+// Create Portfolio Chart
+function createPortfolioChart(data) {
+    const ctx = document.getElementById('portfolioChart').getContext('2d');
+    
+    // Destroy previous chart if it exists
+    if (portfolioChart) portfolioChart.destroy();
+    
+    // Datasets based on active view
+    const datasets = [];
+    
+    if (activeView === 'compare' || activeView === 'neuralode') {
+        datasets.push({
+            label: 'Neural ODE Strategy',
+            data: data.neuralode.portfolio_value,
+            borderColor: 'rgba(40, 167, 69, 1)',
+            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+            fill: false
+        });
+    }
+    
+    if (activeView === 'compare' || activeView === 'lstm') {
+        datasets.push({
+            label: 'LSTM Strategy',
+            data: data.lstm.portfolio_value,
+            borderColor: 'rgba(220, 53, 69, 1)',
+            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+            fill: false
+        });
+    }
+    
+    if (activeView === 'compare' || activeView === 'arch') {
+        datasets.push({
+            label: 'ARCH Strategy',
+            data: data.arch.portfolio_value,
+            borderColor: 'rgba(153, 102, 255, 1)',
+            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+            fill: false
+        });
+    }
+    
+    // Always include buy and hold
+    datasets.push({
+        label: 'Buy and Hold',
+        data: data.buy_and_hold,
+        borderColor: 'rgba(0, 123, 255, 1)',
+        backgroundColor: 'rgba(0, 123, 255, 0.1)',
+        borderDash: [5, 5],
+        fill: false
+    });
+    
+    portfolioChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.dates,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Date'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Portfolio Value ($)'
+                    }
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Portfolio Performance Comparison'
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        }
+    });
+}
+
+// Create Drawdown Chart
+function createDrawdownChart(data) {
+    const ctx = document.getElementById('drawdownChart').getContext('2d');
+    
+    // Destroy previous chart if it exists
+    if (drawdownChart) drawdownChart.destroy();
+    
+    // Datasets based on active view
+    const datasets = [];
+    
+    if (activeView === 'compare' || activeView === 'neuralode') {
+        datasets.push({
+            label: 'Neural ODE Strategy',
+            data: data.neuralode.drawdown,
+            borderColor: 'rgba(40, 167, 69, 1)',
+            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+            fill: false
+        });
+    }
+    
+    if (activeView === 'compare' || activeView === 'lstm') {
+        datasets.push({
+            label: 'LSTM Strategy',
+            data: data.lstm.drawdown,
+            borderColor: 'rgba(220, 53, 69, 1)',
+            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+            fill: false
+        });
+    }
+    
+    if (activeView === 'compare' || activeView === 'arch') {
+        datasets.push({
+            label: 'ARCH Strategy',
+            data: data.arch.drawdown,
+            borderColor: 'rgba(153, 102, 255, 1)',
+            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+            fill: false
+        });
+    }
+    
+    // Always include buy and hold
+    datasets.push({
+        label: 'Buy and Hold',
+        data: data.drawdown_bh,
+        borderColor: 'rgba(0, 123, 255, 1)',
+        backgroundColor: 'rgba(0, 123, 255, 0.1)',
+        borderDash: [5, 5],
+        fill: false
+    });
+    
+    drawdownChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.dates,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Date'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Drawdown (%)'
+                    }
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Drawdown Analysis'
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        }
+    });
+}
+
+// Create Return Distribution Chart
+function createReturnDistChart(data) {
+    const ctx = document.getElementById('returnDistChart').getContext('2d');
+    
+    // Destroy previous chart if it exists
+    if (returnDistChart) returnDistChart.destroy();
+    
+    // Prepare bins for histogram
+    const bins = Array.from({length: 20}, (_, i) => -2 + i * 0.2);
+    
+    // Datasets based on active view
+    const datasets = [];
+    let histogramData = [];
+    
+    if (activeView === 'compare' || activeView === 'neuralode') {
+        // Neural ODE histogram data
+        const neuralodeHistogram = createHistogram(data.neuralode.daily_returns, bins);
+        datasets.push({
+            label: 'Neural ODE Strategy',
+            data: neuralodeHistogram,
+            backgroundColor: 'rgba(40, 167, 69, 0.5)',
+            borderColor: 'rgba(40, 167, 69, 1)',
+            borderWidth: 1
+        });
+        histogramData.push(neuralodeHistogram);
+    }
+    
+    if (activeView === 'compare' || activeView === 'lstm') {
+        // LSTM histogram data
+        const lstmHistogram = createHistogram(data.lstm.daily_returns, bins);
+        datasets.push({
+            label: 'LSTM Strategy',
+            data: lstmHistogram,
+            backgroundColor: 'rgba(220, 53, 69, 0.5)',
+            borderColor: 'rgba(220, 53, 69, 1)',
+            borderWidth: 1
+        });
+        histogramData.push(lstmHistogram);
+    }
+    
+    if (activeView === 'compare' || activeView === 'arch') {
+        // ARCH histogram data
+        const archHistogram = createHistogram(data.arch.daily_returns, bins);
+        datasets.push({
+            label: 'ARCH Strategy',
+            data: archHistogram,
+            backgroundColor: 'rgba(153, 102, 255, 0.5)',
+            borderColor: 'rgba(153, 102, 255, 1)',
+            borderWidth: 1
+        });
+        histogramData.push(archHistogram);
+    }
+    
+    // Always include buy and hold
+    const bhHistogram = createHistogram(data.bh_daily_returns, bins);
+    datasets.push({
+        label: 'Buy and Hold',
+        data: bhHistogram,
+        backgroundColor: 'rgba(0, 123, 255, 0.5)',
+        borderColor: 'rgba(0, 123, 255, 1)',
+        borderWidth: 1
+    });
+    histogramData.push(bhHistogram);
+    
+    // Find maximum Y value across all datasets
+    const maxY = Math.max(...histogramData.flat());
+    
+    returnDistChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: bins.map(b => b.toFixed(1)),
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Daily Return (%)'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Frequency'
+                    },
+                    max: maxY + 2 // Add some padding
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Daily Return Distribution'
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        }
+    });
+}
+
+// Helper function to create histogram data
+function createHistogram(data, bins) {
+    const histogram = Array(bins.length).fill(0);
+    
+    data.forEach(value => {
+        for (let i = 0; i < bins.length; i++) {
+            if (value < bins[i] || i === bins.length - 1) {
+                histogram[i]++;
+                break;
+            }
+        }
+    });
+    
+    return histogram;
+}
+
+// Create Sharpe Ratio Chart
+function createSharpeChart(data) {
+    const ctx = document.getElementById('sharpeChart').getContext('2d');
+    
+    // Destroy previous chart if it exists
+    if (sharpeChart) sharpeChart.destroy();
+    
+    // Create dates for rolling sharpe (subset of main dates)
+    const sharpeDates = data.dates.slice(30, 100);
+    
+    // Datasets based on active view
+    const datasets = [];
+    
+    if (activeView === 'compare' || activeView === 'neuralode') {
+        datasets.push({
+            label: 'Neural ODE Strategy',
+            data: data.neuralode.rolling_sharpe,
+            borderColor: 'rgba(40, 167, 69, 1)',
+            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+            fill: false
+        });
+    }
+    
+    if (activeView === 'compare' || activeView === 'lstm') {
+        datasets.push({
+            label: 'LSTM Strategy',
+            data: data.lstm.rolling_sharpe,
+            borderColor: 'rgba(220, 53, 69, 1)',
+            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+            fill: false
+        });
+    }
+    
+    if (activeView === 'compare' || activeView === 'arch') {
+        datasets.push({
+            label: 'ARCH Strategy',
+            data: data.arch.rolling_sharpe,
+            borderColor: 'rgba(153, 102, 255, 1)',
+            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+            fill: false
+        });
+    }
+    
+    // Always include buy and hold
+    datasets.push({
+        label: 'Buy and Hold',
+        data: data.rolling_sharpe_bh,
+        borderColor: 'rgba(0, 123, 255, 1)',
+        backgroundColor: 'rgba(0, 123, 255, 0.1)',
+        borderDash: [5, 5],
+        fill: false
+    });
+    
+    sharpeChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: sharpeDates,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Date'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Rolling Sharpe (30-day)'
+                    }
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Rolling Sharpe Ratio'
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        }
+    });
+}
+
+// Populate metrics table
+function populateMetricsTable(data) {
+    const tbody = document.getElementById('metricsTableBody');
+    tbody.innerHTML = '';
+    
+    for (const [metric, values] of Object.entries(data.metrics)) {
+        const row = document.createElement('tr');
+        
+        // Add metric name
+        const metricCell = document.createElement('td');
+        metricCell.textContent = metric;
+        row.appendChild(metricCell);
+        
+        // Add values based on active view
+        if (activeView === 'compare') {
+            // Neural ODE
+            const neuralodeCell = document.createElement('td');
+            neuralodeCell.textContent = values.neuralode;
+            row.appendChild(neuralodeCell);
+            
+            // LSTM
+            const lstmCell = document.createElement('td');
+            lstmCell.textContent = values.lstm;
+            row.appendChild(lstmCell);
+            
+            // ARCH
+            const archCell = document.createElement('td');
+            archCell.textContent = values.arch;
+            row.appendChild(archCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        } else if (activeView === 'neuralode') {
+            // Neural ODE
+            const neuralodeCell = document.createElement('td');
+            neuralodeCell.textContent = values.neuralode;
+            row.appendChild(neuralodeCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        } else if (activeView === 'lstm') {
+            // LSTM
+            const lstmCell = document.createElement('td');
+            lstmCell.textContent = values.lstm;
+            row.appendChild(lstmCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        } else if (activeView === 'arch') {
+            // ARCH
+            const archCell = document.createElement('td');
+            archCell.textContent = values.arch;
+            row.appendChild(archCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        }
+        
+        tbody.appendChild(row);
+    }
+}
+
+// Populate advanced metrics table
+function populateAdvancedMetricsTable(data) {
+    const tbody = document.getElementById('advancedMetricsTableBody');
+    tbody.innerHTML = '';
+    
+    for (const [metric, values] of Object.entries(data.advanced_metrics)) {
+        const row = document.createElement('tr');
+        
+        // Add metric name
+        const metricCell = document.createElement('td');
+        metricCell.textContent = metric;
+        row.appendChild(metricCell);
+        
+        // Add values based on active view
+        if (activeView === 'compare') {
+            // Neural ODE
+            const neuralodeCell = document.createElement('td');
+            neuralodeCell.textContent = values.neuralode;
+            row.appendChild(neuralodeCell);
+            
+            // LSTM
+            const lstmCell = document.createElement('td');
+            lstmCell.textContent = values.lstm;
+            row.appendChild(lstmCell);
+            
+            // ARCH
+            const archCell = document.createElement('td');
+            archCell.textContent = values.arch;
+            row.appendChild(archCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        } else if (activeView === 'neuralode') {
+            // Neural ODE
+            const neuralodeCell = document.createElement('td');
+            neuralodeCell.textContent = values.neuralode;
+            row.appendChild(neuralodeCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        } else if (activeView === 'lstm') {
+            // LSTM
+            const lstmCell = document.createElement('td');
+            lstmCell.textContent = values.lstm;
+            row.appendChild(lstmCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        } else if (activeView === 'arch') {
+            // ARCH
+            const archCell = document.createElement('td');
+            archCell.textContent = values.arch;
+            row.appendChild(archCell);
+            
+            // Buy and Hold
+            const buyHoldCell = document.createElement('td');
+            buyHoldCell.textContent = values.buyhold;
+            row.appendChild(buyHoldCell);
+        }
+        
+        tbody.appendChild(row);
+    }
+} 

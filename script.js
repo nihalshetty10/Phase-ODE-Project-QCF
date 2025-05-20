@@ -1,3 +1,4 @@
+// script.js
 // Chart.js instances
 let priceChart, portfolioChart, drawdownChart, returnDistChart, sharpeChart;
 

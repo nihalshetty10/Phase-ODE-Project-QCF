@@ -1,3 +1,4 @@
+# model_comparison_example.py
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,7 +8,7 @@ import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 
 # Import trading strategy modules
-from neural_ode_trading_strategy import visualize_trading_strategy as visualize_neural_ode
+from backtesting_engine import visualize_trading_strategy as visualize_neural_ode
 from lstm_trading_strategy import visualize_trading_strategy as visualize_lstm
 from arch_trading_strategy import (
     prepare_returns, 
