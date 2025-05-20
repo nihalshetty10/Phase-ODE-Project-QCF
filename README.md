@@ -53,7 +53,7 @@ The project includes individual backtesting for each strategy and a comprehensiv
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/yourusername/your-repo-name.git](https://github.com/yourusername/your-repo-name.git)
+    git clone https://github.com/nihalshetty10/Phase-ODE-Project-QCF.git
     cd your-repo-name
     ```
 
