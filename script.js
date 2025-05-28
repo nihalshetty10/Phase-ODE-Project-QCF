@@ -95,21 +95,34 @@ const sampleData = {
 // Initialize the page when DOM is fully loaded
 document.addEventListener('DOMContentLoaded', function() {
     // Add event listeners for model selection buttons
-    document.getElementById('btnCompare').addEventListener('click', function() {
-        setActiveView('compare');
-    });
+    const btnCompare = document.getElementById('btnCompare');
+    const btnNeuralODE = document.getElementById('btnNeuralODE');
+    const btnLSTM = document.getElementById('btnLSTM');
+    const btnARCH = document.getElementById('btnARCH');
+
+    if (btnCompare) {
+        btnCompare.addEventListener('click', function() {
+            setActiveView('compare');
+        });
+    }
     
-    document.getElementById('btnNeuralODE').addEventListener('click', function() {
-        setActiveView('neuralode');
-    });
+    if (btnNeuralODE) {
+        btnNeuralODE.addEventListener('click', function() {
+            setActiveView('neuralode');
+        });
+    }
     
-    document.getElementById('btnLSTM').addEventListener('click', function() {
-        setActiveView('lstm');
-    });
+    if (btnLSTM) {
+        btnLSTM.addEventListener('click', function() {
+            setActiveView('lstm');
+        });
+    }
     
-    document.getElementById('btnARCH').addEventListener('click', function() {
-        setActiveView('arch');
-    });
+    if (btnARCH) {
+        btnARCH.addEventListener('click', function() {
+            setActiveView('arch');
+        });
+    }
 
     // Load SPX data immediately
     displayResults('SPX');
