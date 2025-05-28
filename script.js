@@ -7,7 +7,7 @@ let activeView = 'compare'; // 'compare', 'neuralode', 'lstm', or 'arch'
 
 // Sample data for visualization (this would normally come from your backend)
 const sampleData = {
-    ticker: 'SPY',
+    ticker: 'SPX',
     dates: Array.from({length: 100}, (_, i) => {
         const date = new Date('2022-01-01');
         date.setDate(date.getDate() + i);
@@ -94,24 +94,6 @@ const sampleData = {
 
 // Initialize the page when DOM is fully loaded
 document.addEventListener('DOMContentLoaded', function() {
-    // Form submission handler
-    document.getElementById('tickerForm').addEventListener('submit', function(e) {
-        e.preventDefault();
-        
-        const ticker = document.getElementById('ticker').value.toUpperCase();
-        if (!ticker) return;
-        
-        // Show loading spinner
-        document.getElementById('loadingSpinner').style.display = 'inline-block';
-        
-        // In a real app, we would fetch data from a backend here
-        // For this demo, we'll use sample data with a delay to simulate loading
-        setTimeout(() => {
-            displayResults(ticker);
-            document.getElementById('loadingSpinner').style.display = 'none';
-        }, 1500);
-    });
-    
     // Add event listeners for model selection buttons
     document.getElementById('btnCompare').addEventListener('click', function() {
         setActiveView('compare');
@@ -128,6 +110,9 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('btnARCH').addEventListener('click', function() {
         setActiveView('arch');
     });
+
+    // Load SPX data immediately
+    displayResults('SPX');
 });
 
 // Set the active view and update UI
@@ -145,15 +130,11 @@ function setActiveView(view) {
     }
     
     // Update charts based on the selected view
-    const ticker = document.getElementById('tickerDisplay').textContent;
-    displayResults(ticker);
+    displayResults('SPX');
 }
 
 // Display results based on ticker
 function displayResults(ticker) {
-    // Update ticker display
-    document.getElementById('tickerDisplay').textContent = ticker;
-    
     // Show results section
     document.getElementById('resultsSection').style.display = 'block';
     
@@ -168,9 +149,6 @@ function displayResults(ticker) {
     createSharpeChart(data);
     populateMetricsTable(data);
     populateAdvancedMetricsTable(data);
-    
-    // Scroll to results
-    document.getElementById('resultsSection').scrollIntoView({behavior: 'smooth'});
 }
 
 // Create Price Chart with Signals
