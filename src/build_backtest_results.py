@@ -1,8 +1,11 @@
-"""Reproducible, leakage-aware SPY benchmark for the static project site.
+"""Build the reproducible SPY forecast and trading benchmark used by the site.
 
 The script trains models through 2021, uses 2022 only for early stopping and
 signal-threshold selection, then reports the untouched 2023-2024 test period.
 Predictions are formed after each close and applied to the following session.
+
+Run from the repository root:
+    python src/build_backtest_results.py
 """
 
 from __future__ import annotations
@@ -23,9 +26,9 @@ from sklearn.linear_model import Ridge
 from torch import nn
 
 
-ROOT = Path(__file__).resolve().parent
-DATA_PATH = ROOT / "data" / "spy_adjusted.csv"
-RESULTS_PATH = ROOT / "results.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "data" / "spy_adjusted_close_2015_2024.csv"
+RESULTS_PATH = PROJECT_ROOT / "assets" / "data" / "backtest-results.json"
 SEED = 42
 WINDOW = 20
 INITIAL_CAPITAL = 10_000.0
@@ -77,7 +80,9 @@ def load_data(refresh: bool) -> pd.DataFrame:
 
 
 @dataclass
-class Dataset:
+class ForecastDataset:
+    """Aligned model inputs, next-session targets, prices, and dates."""
+
     x: np.ndarray
     y: np.ndarray
     origin_price: np.ndarray
@@ -86,7 +91,8 @@ class Dataset:
     target_date: np.ndarray
 
 
-def make_dataset(frame: pd.DataFrame) -> Dataset:
+def build_forecast_dataset(frame: pd.DataFrame) -> ForecastDataset:
+    """Construct 20-return features without exposing the target session."""
     prices = frame["adjusted_close"].to_numpy(dtype=np.float64)
     dates = frame["date"].dt.strftime("%Y-%m-%d").to_numpy()
     log_returns = np.diff(np.log(prices))
@@ -100,7 +106,7 @@ def make_dataset(frame: pd.DataFrame) -> Dataset:
         target_price.append(prices[target_index])
         origin_date.append(dates[origin_index])
         target_date.append(dates[target_index])
-    return Dataset(
+    return ForecastDataset(
         x=np.asarray(x, dtype=np.float32),
         y=np.asarray(y, dtype=np.float32),
         origin_price=np.asarray(origin_price),
@@ -110,7 +116,9 @@ def make_dataset(frame: pd.DataFrame) -> Dataset:
     )
 
 
-class ODEFunc(nn.Module):
+class LatentDynamics(nn.Module):
+    """Learned derivative function for the Neural ODE latent state."""
+
     def __init__(self, hidden: int):
         super().__init__()
         self.net = nn.Sequential(
@@ -126,7 +134,7 @@ class ODEFunc(nn.Module):
 class RK4ODEBlock(nn.Module):
     """Differentiable fixed-step integration over continuous depth t=[0,1]."""
 
-    def __init__(self, func: ODEFunc, steps: int = 4):
+    def __init__(self, func: LatentDynamics, steps: int = 4):
         super().__init__()
         self.func = func
         self.steps = steps
@@ -146,7 +154,7 @@ class NeuralODEForecaster(nn.Module):
     def __init__(self, window: int = WINDOW, hidden: int = 16):
         super().__init__()
         self.encoder = nn.Sequential(nn.Linear(window, hidden), nn.Tanh())
-        self.ode = RK4ODEBlock(ODEFunc(hidden), steps=4)
+        self.ode = RK4ODEBlock(LatentDynamics(hidden), steps=4)
         self.readout = nn.Linear(hidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -222,7 +230,8 @@ def signal_positions(predictions: np.ndarray, threshold: float) -> np.ndarray:
     return np.where(predictions > threshold, 1.0, np.where(predictions < -threshold, -1.0, 0.0))
 
 
-def strategy_returns(realized_log_returns: np.ndarray, positions: np.ndarray) -> np.ndarray:
+def calculate_net_strategy_returns(realized_log_returns: np.ndarray, positions: np.ndarray) -> np.ndarray:
+    """Apply forecast positions and charge 5 bps for each unit of turnover."""
     simple_returns = np.expm1(realized_log_returns)
     prior_positions = np.r_[0.0, positions[:-1]]
     costs = TRANSACTION_COST * np.abs(positions - prior_positions)
@@ -239,7 +248,7 @@ def choose_threshold(predictions: np.ndarray, realized: np.ndarray) -> tuple[flo
     rows = []
     for threshold in candidates:
         positions = signal_positions(predictions, threshold)
-        returns = strategy_returns(realized, positions)
+        returns = calculate_net_strategy_returns(realized, positions)
         rows.append({"threshold": threshold, "sharpe": sharpe(returns)})
     best = max(rows, key=lambda row: (row["sharpe"], row["threshold"]))
     return float(best["threshold"]), rows
@@ -260,7 +269,8 @@ def safe_number(value: float | int) -> float | int | None:
     return value if np.isfinite(value) else None
 
 
-def metrics(returns: np.ndarray, positions: np.ndarray | None = None) -> dict:
+def calculate_performance_metrics(returns: np.ndarray, positions: np.ndarray | None = None) -> dict:
+    """Calculate annualized and path-dependent metrics for one return series."""
     equity = np.cumprod(1.0 + returns)
     years = len(returns) / 252
     total_return = equity[-1] - 1
@@ -292,7 +302,7 @@ def metrics(returns: np.ndarray, positions: np.ndarray | None = None) -> dict:
     return result
 
 
-def serialise(values: np.ndarray, digits: int = 6) -> list:
+def serialize_series(values: np.ndarray, digits: int = 6) -> list:
     return [None if not np.isfinite(value) else round(float(value), digits) for value in values]
 
 
@@ -303,18 +313,18 @@ def build_model_result(
     threshold: float,
 ) -> dict:
     positions = signal_positions(predictions, threshold)
-    returns = strategy_returns(realized, positions)
+    returns = calculate_net_strategy_returns(realized, positions)
     equity = INITIAL_CAPITAL * np.cumprod(1.0 + returns)
     predicted_prices = origin_prices * np.exp(predictions)
     return {
-        "predicted_price": serialise(predicted_prices, 4),
-        "predicted_return": serialise(predictions, 8),
-        "position": serialise(positions, 0),
-        "daily_return": serialise(returns, 8),
-        "equity": serialise(equity, 2),
-        "drawdown": serialise(drawdown(equity), 6),
-        "rolling_sharpe": serialise(rolling_sharpe(returns), 4),
-        "metrics": metrics(returns, positions),
+        "predicted_price": serialize_series(predicted_prices, 4),
+        "predicted_return": serialize_series(predictions, 8),
+        "position": serialize_series(positions, 0),
+        "daily_return": serialize_series(returns, 8),
+        "equity": serialize_series(equity, 2),
+        "drawdown": serialize_series(drawdown(equity), 6),
+        "rolling_sharpe": serialize_series(rolling_sharpe(returns), 4),
+        "metrics": calculate_performance_metrics(returns, positions),
         "forecast_metrics": {
             "rmse_bps": float(np.sqrt(np.mean((predictions - realized) ** 2)) * 10_000),
             "directional_accuracy": float(np.mean(np.sign(predictions) == np.sign(realized))),
@@ -329,7 +339,7 @@ def main() -> None:
     args = parser.parse_args()
     seed_everything()
     frame = load_data(args.refresh_data)
-    data = make_dataset(frame)
+    data = build_forecast_dataset(frame)
     target_dates = pd.to_datetime(data.target_date)
     train_mask = target_dates <= TRAIN_END
     validation_mask = (target_dates > TRAIN_END) & (target_dates <= VALIDATION_END)
@@ -390,19 +400,19 @@ def main() -> None:
     buy_hold_returns = np.expm1(test_realized)
     buy_hold_equity = INITIAL_CAPITAL * np.cumprod(1.0 + buy_hold_returns)
     result_models["buy_hold"] = {
-        "daily_return": serialise(buy_hold_returns, 8),
-        "equity": serialise(buy_hold_equity, 2),
-        "drawdown": serialise(drawdown(buy_hold_equity), 6),
-        "rolling_sharpe": serialise(rolling_sharpe(buy_hold_returns), 4),
-        "metrics": metrics(buy_hold_returns),
+        "daily_return": serialize_series(buy_hold_returns, 8),
+        "equity": serialize_series(buy_hold_equity, 2),
+        "drawdown": serialize_series(drawdown(buy_hold_equity), 6),
+        "rolling_sharpe": serialize_series(rolling_sharpe(buy_hold_returns), 4),
+        "metrics": calculate_performance_metrics(buy_hold_returns),
     }
     cash_returns = np.zeros_like(test_realized)
     result_models["cash"] = {
-        "daily_return": serialise(cash_returns, 8),
-        "equity": serialise(np.full(len(cash_returns), INITIAL_CAPITAL), 2),
-        "drawdown": serialise(np.zeros(len(cash_returns)), 6),
-        "rolling_sharpe": serialise(np.zeros(len(cash_returns)), 4),
-        "metrics": metrics(cash_returns),
+        "daily_return": serialize_series(cash_returns, 8),
+        "equity": serialize_series(np.full(len(cash_returns), INITIAL_CAPITAL), 2),
+        "drawdown": serialize_series(np.zeros(len(cash_returns)), 6),
+        "rolling_sharpe": serialize_series(np.zeros(len(cash_returns)), 4),
+        "metrics": calculate_performance_metrics(cash_returns),
     }
 
     payload = {
@@ -425,7 +435,7 @@ def main() -> None:
             "selection": "2022 validation data selects early stopping and each model's neutral-zone threshold; 2023-2024 is untouched until final evaluation.",
         },
         "dates": data.target_date[test_mask].tolist(),
-        "actual_price": serialise(test_prices, 4),
+        "actual_price": serialize_series(test_prices, 4),
         "models": result_models,
         "training": training_details,
     }

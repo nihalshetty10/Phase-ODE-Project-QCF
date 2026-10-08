@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Out-of-sample SPY results for a Neural ODE, LSTM, and linear autoregression.">
   <title>Neural ODE trading experiment</title>
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="assets/css/research-note.css?v=4">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-  <script src="script.js?v=3" defer></script>
+  <script src="assets/js/backtest-dashboard.js?v=4" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -25,7 +25,7 @@
       <h1>Neural ODE trading experiment on SPY</h1>
       <p class="dek">I trained a small Neural ODE to predict the next daily return of SPY and compared it with an LSTM, a linear autoregression, buy-and-hold, and cash.</p>
       <p class="abstract"><strong>Result.</strong> The Neural ODE made money in the 2023–2024 test period, but it did not beat buy-and-hold. Its smaller drawdown came with much lower market exposure. The page below is generated from the checked-in backtest output.</p>
-      <p class="byline">Nihal Shetty and Neil Mascarenhas · <a href="results.json">Results data</a> · <a href="run_backtest.py">Backtest code</a></p>
+      <p class="byline">Nihal Shetty and Neil Mascarenhas · <a href="assets/data/backtest-results.json">Results data</a> · <a href="src/build_backtest_results.py">Backtest code</a></p>
     </article>
 
     <section class="run-info" aria-label="Backtest settings">
@@ -48,7 +48,7 @@
         <div>
           <span>Neural ODE return</span>
           <strong id="verdictValue">Loading…</strong>
-          <p id="verdictText">Reading results.json</p>
+          <p id="verdictText">Reading the saved backtest results.</p>
         </div>
         <div class="stat-grid" id="statGrid" aria-live="polite"></div>
       </div>
@@ -120,9 +120,9 @@
     <section class="section files">
       <h2>Files</h2>
       <ul>
-        <li><a href="run_backtest.py">run_backtest.py</a> — training, execution, and metrics</li>
-        <li><a href="data/spy_adjusted.csv">data/spy_adjusted.csv</a> — adjusted-close snapshot, <span id="dataRange">—</span></li>
-        <li><a href="results.json">results.json</a> — data used by this page, <span id="generatedAt">—</span></li>
+        <li><a href="src/build_backtest_results.py">src/build_backtest_results.py</a> — training, execution, and metrics</li>
+        <li><a href="data/spy_adjusted_close_2015_2024.csv">data/spy_adjusted_close_2015_2024.csv</a> — adjusted-close snapshot, <span id="dataRange">—</span></li>
+        <li><a href="assets/data/backtest-results.json">assets/data/backtest-results.json</a> — data used by this page, <span id="generatedAt">—</span></li>
       </ul>
     </section>
   </main>
