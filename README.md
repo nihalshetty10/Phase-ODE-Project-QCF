@@ -1,104 +1,48 @@
-# Advanced Financial Trading Strategies Comparison
+# Phase ODE: reproducible SPY benchmark
 
-## Overview
+This repository evaluates whether a small Neural ODE can forecast SPY's next-session return. The project site is generated from a checked-in, deterministic backtest artifact—not browser-side sample data.
 
-This project implements and compares three advanced financial trading strategies:
-1.  **ARCH/GARCH Models**: Utilizes Autoregressive Conditional Heteroskedasticity models to forecast volatility and generate trading signals based on volatility regimes.
-2.  **LSTM (Long Short-Term Memory) Networks**: Employs recurrent neural networks to predict future price movements based on historical price sequences.
-3.  **Neural Ordinary Differential Equations (Neural ODEs)**: Leverages continuous-depth neural networks to model the underlying dynamics of financial time series for price forecasting. This approach is inspired by the paper "Phase Space Reconstructed Neural Ordinary Differential Equations Model for Stock Price Forecasting" by Nguyen et al.
+## Honest headline result
 
-The project includes individual backtesting for each strategy and a comprehensive comparison framework, visualized through a web interface.
+For the locked 2023–2024 test period (502 sessions), the Neural ODE returned **13.3%** after modeled trading costs, versus **57.6%** for buy-and-hold. Its maximum drawdown was **-3.7%** versus **-10.0%** for buy-and-hold, but it had only **19% average gross exposure**. The model therefore reduced risk largely by participating less; it did not beat the passive benchmark.
 
-## Features
+These values come from `results.json`. Re-run `run_backtest.py` to reproduce them.
 
-* **Multiple Models**: Implementation of ARCH/GARCH, LSTM, and Neural ODEs for stock price/direction forecasting.
-* **Backtesting Engine**: Robust backtesting functionality to simulate trading strategies and evaluate performance.
-* **Performance Metrics**: Calculation of a wide range of metrics, including:
-    * Total & Annualized Return
-    * Volatility (Daily & Annualized)
-    * Sharpe Ratio
-    * Maximum Drawdown
-    * Win Rate & Profit Factor
-    * Sortino Ratio
-    * Calmar Ratio
-* **Comparative Analysis**: A dedicated script to run all strategies on the same dataset and compare their performance side-by-side.
-* **Interactive Web Visualization**: A user-friendly web interface (`web_interface/index.html`) to display:
-    * Price predictions vs. actual prices.
-    * Trading signals on price charts.
-    * Portfolio performance against a Buy & Hold strategy.
-    * Drawdown analysis.
-    * Distribution of daily returns.
-    * Rolling Sharpe ratios.
-    * Tabular comparison of all key performance metrics.
+## Experiment
 
-## Technologies Used
+- Instrument: SPY auto-adjusted close.
+- Inputs: trailing 20 daily log returns.
+- Training: 2015-02-03 through 2021-12-31.
+- Validation: calendar 2022, used for neural-model early stopping and signal threshold selection.
+- Locked test: 2023-01-03 through 2024-12-31.
+- Execution: a forecast formed with data through close `t` is applied to the close-to-close return from `t` to `t+1`.
+- Cost model: 5 basis points per one-way change in position.
+- Seed: 42, with deterministic PyTorch operations.
+- Benchmarks: LSTM, Ridge AR(20), buy-and-hold, and cash.
 
-* **Python 3.x**
-* **Core Libraries**:
-    * `pandas` for data manipulation.
-    * `numpy` for numerical operations.
-    * `matplotlib` for plotting.
-    * `yfinance` for downloading stock data.
-    * `scikit-learn` for data preprocessing (e.g., `MinMaxScaler`).
-* **Modeling Libraries**:
-    * `arch` for ARCH/GARCH models.
-    * `torch` (PyTorch) for LSTM and Neural ODE implementations.
-    * `torchdiffeq` for Neural ODE solver.
-* **Web Interface**:
-    * HTML, CSS, JavaScript
-    * `Chart.js` for interactive charts.
-    * `Bootstrap` for styling.
+The Neural ODE encodes the return window to a 16-dimensional state, evolves it across continuous depth with a learned vector field and four differentiable RK4 steps, then reads out the next log return.
 
-## Setup and Installation
+## Reproduce
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/nihalshetty10/Phase-ODE-Project-QCF.git
-    cd Phase-ODE-Project-QCF
-    ```
-
-2.  **Create a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    ```
-
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-### Running Individual Strategies
-
-You can run each trading strategy independently:
-
-* **ARCH/GARCH Strategy:**
-    ```bash
-    python arch_trading_example.py
-    ```
-    This will load data for 'SPY', fit an ARCH/GARCH model, generate signals, visualize performance, and save results to `arch_trading_signals.csv` and `arch_results.pkl`.
-
-* **LSTM Strategy:**
-    ```bash
-    python lstm_trading_example.py
-    ```
-    This will train an LSTM model on 'SPY' data, generate predictions, visualize performance, and save results to `lstm_trading_signals.csv` and `lstm_results.pkl`.
-
-* **Neural ODE Strategy:**
-    *(Assuming you've refactored `trading_strategy.py` to `neural_ode_core.py` and potentially created a `run_neural_ode_strategy.py`)*
-    ```bash
-    # If you have a dedicated runner script:
-    python run_neural_ode_strategy.py 
-    # Alternatively, the core logic might be directly in neural_ode_core.py:
-    # python neural_ode_core.py 
-    ```
-    This script should handle training or loading a pre-trained Neural ODE model, making predictions, and saving its results (e.g., `neural_ode_results.pkl`). 
-    *(You'll need to clarify how this is run after refactoring)*
-
-### Running Model Comparison
-
-To compare all models:
 ```bash
-python model_comparison_example.py
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python run_backtest.py
+python -m http.server 8000
+```
+
+Open `http://localhost:8000`. The default run uses the checked-in `data/spy_adjusted.csv` snapshot. Use `python run_backtest.py --refresh-data` to replace it from Yahoo Finance before rebuilding.
+
+## Files that power the site
+
+- `run_backtest.py`: data preparation, model training, validation selection, trading simulation, and metrics.
+- `data/spy_adjusted.csv`: fixed adjusted-close snapshot used by the published run.
+- `results.json`: generated, browser-readable backtest artifact.
+- `index.html`, `styles.css`, `script.js`: static GitHub Pages interface.
+
+## Limitations
+
+This is a single instrument and a single two-year test regime. Threshold selection uses one validation year. The cost model omits bid/ask spread and market impact. Adjusted prices account for distributions, but the simulation does not model taxes, borrow constraints, financing costs, or execution slippage beyond the fixed cost. No statistical-significance claim is made.
+
+The older example modules remain for historical context, but they are not the source of the published site results. In particular, the old comparison script used synthetic Neural ODE predictions; the current site does not consume those outputs.
